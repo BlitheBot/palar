@@ -97,6 +97,55 @@ steps:
       fail-on-empty: "true"
 ```
 
+## Configuration
+
+All commands accept `--config <path>`, and a `.mcpguardrc.json` in the
+working directory is picked up automatically. With no config present,
+behavior is identical to the built-in defaults. A malformed config is a
+hard error, never silently ignored. Every field is optional except
+`configVersion` (must be `1` — future shape changes will bump it rather
+than silently breaking existing files).
+
+```json
+{
+  "configVersion": 1,
+  "limits": {
+    "maxFileSize": 10485760,
+    "maxNestingDepth": 50,
+    "maxSchemaNodes": 5000
+  },
+  "sensitiveKeywords": ["command", "cmd", "path", "url", "sql", "deploy_target"],
+  "unicodeCategories": {
+    "zeroWidth": ["200B-200D", "2060", "FEFF"],
+    "bidi": ["202A-202E", "2066-2069"],
+    "tagChars": ["E0000-E007F"],
+    "variationSelectors": ["FE00-FE0F"],
+    "controlChars": ["0000-0008", "000B-000C", "000E-001F", "007F-009F"]
+  },
+  "network": {
+    "loopbackHosts": ["localhost", "0.0.0.0", "::1"],
+    "loopbackPatterns": ["^127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"],
+    "privateSubnetPatterns": ["^10\\.", "^192\\.168\\."]
+  },
+  "severityOverrides": {
+    "IV-001": "medium"
+  }
+}
+```
+
+- `limits` — the scanner-hardening caps (also settable per run via
+  `--max-file-size`, `--max-nesting-depth`, `--max-schema-nodes`, which
+  win over the file).
+- `sensitiveKeywords` — identifier segments input-validation treats as
+  execution-adjacent; replaces the default list.
+- `unicodeCategories` — hex code points/ranges per text-sanitizer
+  category; each specified category replaces its default, unspecified
+  categories keep theirs.
+- `network` — exact loopback host names plus regex sources for loopback
+  and private-subnet host matching in network-bounds.
+- `severityOverrides` — per-ruleId severity replacement (e.g. downgrade
+  `IV-001` to `medium`); affects both the report and the score.
+
 ## File discovery
 
 mcpguard finds definitions by naming convention, searching each given path

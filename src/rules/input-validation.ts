@@ -5,26 +5,7 @@
  */
 import type { Finding, JSONSchemaProperty, MCPToolDefinition } from "../core/types.js";
 import type { RuleContext, ToolRule } from "./index.js";
-import { DEFAULT_LIMITS } from "../core/config.js";
-
-const SENSITIVE_KEYWORDS = new Set([
-  "command",
-  "cmd",
-  "path",
-  "file",
-  "exec",
-  "execute",
-  "query",
-  "sql",
-  "shell",
-  "script",
-  "url",
-  "uri",
-  "endpoint",
-  "host",
-  "arg",
-  "args",
-]);
+import { DEFAULT_CONFIG, DEFAULT_LIMITS } from "../core/config.js";
 
 const COMPLIANCE_REFS = ["MCP-TOP10:A1-InjectionSurface"];
 
@@ -41,8 +22,8 @@ function nameSegments(name: string): string[] {
     .map((s) => s.toLowerCase());
 }
 
-function matchesSensitiveKeyword(name: string): boolean {
-  return nameSegments(name).some((seg) => SENSITIVE_KEYWORDS.has(seg));
+function matchesSensitiveKeyword(name: string, keywords: Set<string>): boolean {
+  return nameSegments(name).some((seg) => keywords.has(seg));
 }
 
 function isConstrained(prop: JSONSchemaProperty): boolean {
@@ -109,6 +90,9 @@ export const inputValidationRule: ToolRule = {
     const findings: Finding[] = [];
 
     const limits = ctx.config?.limits ?? DEFAULT_LIMITS;
+    const keywords = new Set(
+      ctx.config?.sensitiveKeywords ?? DEFAULT_CONFIG.sensitiveKeywords
+    );
     const state: WalkState = {
       nodesVisited: 0,
       maxDepth: limits.maxNestingDepth,
@@ -122,7 +106,7 @@ export const inputValidationRule: ToolRule = {
       walkProperties(properties, "", (name, path, prop) => {
         if (
           prop.type === "string" &&
-          matchesSensitiveKeyword(name) &&
+          matchesSensitiveKeyword(name, keywords) &&
           !isConstrained(prop)
         ) {
           findings.push({
@@ -148,7 +132,7 @@ export const inputValidationRule: ToolRule = {
           });
         }
       }, 0, state);
-    } else if (matchesSensitiveKeyword(tool.name)) {
+    } else if (matchesSensitiveKeyword(tool.name, keywords)) {
       findings.push({
         ruleId: "IV-002",
         pillar: "schema-integrity",

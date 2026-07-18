@@ -16,8 +16,8 @@ import type { ResolvedConfig } from "../core/config.js";
 
 export interface RuleContext {
   file: string;
-  /** Resolved configuration; rules fall back to built-in defaults when absent. */
-  config?: ResolvedConfig;
+  /** Resolved configuration (possibly partial in tests); rules fall back to built-in defaults per field. */
+  config?: Partial<ResolvedConfig>;
   /** Collector for non-finding warnings (e.g. hardening-limit hits). */
   warn?: (message: string) => void;
 }

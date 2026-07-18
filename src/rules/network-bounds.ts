@@ -5,6 +5,8 @@
  */
 import type { Finding, MCPServerConfig } from "../core/types.js";
 import type { RuleContext, ServerRule } from "./index.js";
+import type { NetworkPatterns } from "../core/config.js";
+import { DEFAULT_CONFIG } from "../core/config.js";
 
 const COMPLIANCE_REFS = ["MCP-TOP10:C3-SSRF"];
 
@@ -22,28 +24,22 @@ function normalizeHost(host: string): string {
   return s;
 }
 
-function isLoopback(host: string): boolean {
+function isLoopback(host: string, net: NetworkPatterns): boolean {
   return (
-    host === "localhost" ||
-    host === "0.0.0.0" ||
-    host === "::1" ||
-    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+    net.loopbackHosts.includes(host) ||
+    net.loopbackPatterns.some((p) => new RegExp(p).test(host))
   );
 }
 
-function isPrivateSubnet(host: string): boolean {
-  return (
-    /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ||
-    /^192\.168\.\d{1,3}\.\d{1,3}$/.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host) ||
-    /^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)
-  );
+function isPrivateSubnet(host: string, net: NetworkPatterns): boolean {
+  return net.privateSubnetPatterns.some((p) => new RegExp(p).test(host));
 }
 
 export const networkBoundsRule: ServerRule = {
   id: "network-bounds",
   check(server: MCPServerConfig, ctx: RuleContext): Finding[] {
     const findings: Finding[] = [];
+    const net = ctx.config?.network ?? DEFAULT_CONFIG.network;
     const basePath = `servers["${server.name}"].network`;
     const network = server.network;
 
@@ -91,7 +87,7 @@ export const networkBoundsRule: ServerRule = {
       if (typeof rawHost !== "string") return;
       const host = normalizeHost(rawHost);
       const hostPath = `${basePath}.exposedHosts[${index}]`;
-      if (isLoopback(host)) {
+      if (isLoopback(host, net)) {
         findings.push({
           ruleId: "NB-003",
           pillar: "network-boundaries",
@@ -108,7 +104,7 @@ export const networkBoundsRule: ServerRule = {
             `specific external service the server actually needs to expose.`,
           complianceRefs: [...COMPLIANCE_REFS],
         });
-      } else if (isPrivateSubnet(host)) {
+      } else if (isPrivateSubnet(host, net)) {
         findings.push({
           ruleId: "NB-004",
           pillar: "network-boundaries",

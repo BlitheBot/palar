@@ -7,6 +7,8 @@
  */
 import type { Finding, MCPToolDefinition, Severity } from "../core/types.js";
 import type { RuleContext, ToolRule } from "./index.js";
+import type { UnicodeCategoryName } from "../core/config.js";
+import { DEFAULT_CONFIG, parseCodePointRanges } from "../core/config.js";
 
 const COMPLIANCE_REFS = ["MCP-TOP10:B2-ToolPoisoning"];
 
@@ -17,43 +19,58 @@ interface CodePointCategory {
   matches(cp: number): boolean;
 }
 
-const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff]);
-const ALLOWED_CONTROLS = new Set([0x09, 0x0a, 0x0d]); // \t \n \r
-
-const CATEGORIES: CodePointCategory[] = [
+/** Fixed category identity; the code-point ranges come from config. */
+const CATEGORY_META: {
+  key: UnicodeCategoryName;
+  ruleId: string;
+  label: string;
+  severity: Severity;
+}[] = [
   {
+    key: "zeroWidth",
     ruleId: "TS-001",
     label: "zero-width/invisible characters",
     severity: "high",
-    matches: (cp) => ZERO_WIDTH.has(cp),
   },
   {
+    key: "bidi",
     ruleId: "TS-002",
     label: "bidirectional override controls",
     severity: "critical",
-    matches: (cp) => (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069),
   },
   {
+    key: "tagChars",
     ruleId: "TS-003",
     label: "Unicode tag characters",
     severity: "critical",
-    matches: (cp) => cp >= 0xe0000 && cp <= 0xe007f,
   },
   {
+    key: "variationSelectors",
     ruleId: "TS-004",
     label: "variation selectors",
     severity: "low",
-    matches: (cp) => cp >= 0xfe00 && cp <= 0xfe0f,
   },
   {
+    key: "controlChars",
     ruleId: "TS-005",
     label: "non-printable control characters",
     severity: "medium",
-    matches: (cp) =>
-      !ALLOWED_CONTROLS.has(cp) &&
-      (cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f)),
   },
 ];
+
+function buildCategories(
+  categoryRanges: Record<UnicodeCategoryName, string[]>
+): CodePointCategory[] {
+  return CATEGORY_META.map(({ key, ruleId, label, severity }) => {
+    const ranges = parseCodePointRanges(categoryRanges[key]);
+    return {
+      ruleId,
+      label,
+      severity,
+      matches: (cp: number) => ranges.some(([lo, hi]) => cp >= lo && cp <= hi),
+    };
+  });
+}
 
 function formatCodePoint(cp: number): string {
   return `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
@@ -65,12 +82,15 @@ interface CategoryHits {
 }
 
 /** Tally suspicious code points in a field, grouped by category. */
-function scanField(text: string): Map<CodePointCategory, CategoryHits> {
+function scanField(
+  text: string,
+  categories: CodePointCategory[]
+): Map<CodePointCategory, CategoryHits> {
   const hits = new Map<CodePointCategory, CategoryHits>();
   for (const char of text) {
     const cp = char.codePointAt(0);
     if (cp === undefined) continue;
-    for (const category of CATEGORIES) {
+    for (const category of categories) {
       if (category.matches(cp)) {
         let entry = hits.get(category);
         if (!entry) {
@@ -90,6 +110,9 @@ export const textSanitizerRule: ToolRule = {
   id: "text-sanitizer",
   check(tool: MCPToolDefinition, ctx: RuleContext): Finding[] {
     const findings: Finding[] = [];
+    const categories = buildCategories(
+      ctx.config?.unicodeCategories ?? DEFAULT_CONFIG.unicodeCategories
+    );
 
     const fields: { fieldName: string; jsonPath: string; text: string }[] = [];
     // Raw JSON may put non-strings in these fields; only scan real strings.
@@ -109,7 +132,7 @@ export const textSanitizerRule: ToolRule = {
     }
 
     for (const { fieldName, jsonPath, text } of fields) {
-      for (const [category, { count, codePoints }] of scanField(text)) {
+      for (const [category, { count, codePoints }] of scanField(text, categories)) {
         const points = [...codePoints]
           .sort((a, b) => a - b)
           .map(formatCodePoint)

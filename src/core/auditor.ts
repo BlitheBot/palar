@@ -31,12 +31,20 @@ export function runAudit(
     }
   }
 
+  // Apply config-driven per-ruleId severity overrides before scoring, so
+  // a downgraded rule also weighs less in the score.
+  const overrides = config.severityOverrides ?? {};
+  const finalFindings = findings.map((finding) => {
+    const override = overrides[finding.ruleId];
+    return override ? { ...finding, severity: override } : finding;
+  });
+
   return {
     timestamp: new Date().toISOString(),
     toolsScanned: discovered.tools.length,
     serversScanned: discovered.servers.length,
-    findings,
-    score: computeScore(findings),
+    findings: finalFindings,
+    score: computeScore(finalFindings),
     warnings,
   };
 }

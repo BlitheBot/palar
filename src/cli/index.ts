@@ -4,7 +4,7 @@ import { Command, InvalidArgumentError, Option } from "commander";
 import chalk from "chalk";
 import type { Severity } from "../core/types.js";
 import type { ResolvedConfig } from "../core/config.js";
-import { DEFAULT_LIMITS } from "../core/config.js";
+import { DEFAULT_LIMITS, loadConfigFile } from "../core/config.js";
 import { discover } from "../discovery/index.js";
 import { runAudit } from "../core/auditor.js";
 import {
@@ -30,17 +30,24 @@ function positiveInt(value: string): number {
 }
 
 interface LimitOpts {
+  config?: string;
   maxFileSize?: number;
   maxNestingDepth?: number;
   maxSchemaNodes?: number;
 }
 
-function resolveLimitsConfig(opts: LimitOpts): ResolvedConfig {
+/**
+ * Load config from --config / .mcpguardrc.json (defaults when absent),
+ * then layer CLI limit flags on top — flags always win over the file.
+ */
+async function loadCliConfig(opts: LimitOpts): Promise<ResolvedConfig> {
+  const base = await loadConfigFile(opts.config, process.cwd());
   return {
+    ...base,
     limits: {
-      maxFileSize: opts.maxFileSize ?? DEFAULT_LIMITS.maxFileSize,
-      maxNestingDepth: opts.maxNestingDepth ?? DEFAULT_LIMITS.maxNestingDepth,
-      maxSchemaNodes: opts.maxSchemaNodes ?? DEFAULT_LIMITS.maxSchemaNodes,
+      maxFileSize: opts.maxFileSize ?? base.limits.maxFileSize,
+      maxNestingDepth: opts.maxNestingDepth ?? base.limits.maxNestingDepth,
+      maxSchemaNodes: opts.maxSchemaNodes ?? base.limits.maxSchemaNodes,
     },
   };
 }
@@ -61,6 +68,10 @@ const LIMIT_OPTIONS: [flag: string, description: string][] = [
 ];
 
 function addLimitOptions(cmd: Command): Command {
+  cmd.option(
+    "--config <path>",
+    "path to a config file (default: ./.mcpguardrc.json when present)"
+  );
   for (const [flag, description] of LIMIT_OPTIONS) {
     cmd.option(flag, description, positiveInt);
   }
@@ -100,7 +111,7 @@ addLimitOptions(
       failOnEmpty?: boolean;
     } & LimitOpts
   ) => {
-      const config = resolveLimitsConfig(opts);
+      const config = await loadCliConfig(opts);
       const roots = [...paths, ...(opts.dir ?? [])];
       const discovered = await discover(roots, {
         maxFileSize: config.limits.maxFileSize,
@@ -193,7 +204,7 @@ addLimitOptions(
     .option("--out <file>", "snapshot file to write", ".mcpguard-snapshot.json")
 ).action(
   async (opts: { dir?: string[]; out: string } & LimitOpts) => {
-    const config = resolveLimitsConfig(opts);
+    const config = await loadCliConfig(opts);
     const discovered = await discover(opts.dir ?? [], {
       maxFileSize: config.limits.maxFileSize,
     });
@@ -217,7 +228,12 @@ program
   .description("Compare current tool definitions against a baseline snapshot")
   .option("--dir <dir...>", "directories to scan")
   .option("--snapshot <file>", "baseline snapshot file", ".mcpguard-snapshot.json")
-  .action(async (opts: { dir?: string[]; snapshot: string }) => {
+  .option(
+    "--config <path>",
+    "path to a config file (default: ./.mcpguardrc.json when present)"
+  )
+  .action(async (opts: { dir?: string[]; snapshot: string; config?: string }) => {
+    const config = await loadCliConfig(opts);
     const baseline = await loadSnapshot(opts.snapshot);
     if (!baseline) {
       console.error(
@@ -233,7 +249,7 @@ program
     for (const warning of discovered.warnings) {
       console.error(chalk.dim(`warning: ${warning}`));
     }
-    const { snapshot: current, warnings } = buildSnapshot(discovered);
+    const { snapshot: current, warnings } = buildSnapshot(discovered, config.limits);
     for (const warning of warnings) {
       console.error(chalk.yellow(`warning: ${warning}`));
     }
