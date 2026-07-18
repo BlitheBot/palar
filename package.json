@@ -1,5 +1,5 @@
 {
-  "name": "mcpguard",
+  "name": "@blithedale/mcpguard",
   "version": "0.1.0",
   "description": "Defensive, read-only static analyzer for local MCP tool and server definition files",
   "type": "module",
