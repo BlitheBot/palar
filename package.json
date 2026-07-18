@@ -4,7 +4,7 @@
   "description": "Defensive, read-only static analyzer for local MCP tool and server definition files",
   "type": "module",
   "bin": {
-    "mcpguard": "./dist/cli/index.js"
+    "mcpguard": "dist/cli/index.js"
   },
   "main": "./dist/cli/index.js",
   "files": [
