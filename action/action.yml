@@ -1,0 +1,91 @@
+name: MCPGuard Scan
+description: >-
+  Run MCPGuard, a defensive read-only static analyzer for MCP (Model Context
+  Protocol) tool and server definition files, as a CI gate. No network calls,
+  no payload generation — it only reads local JSON files and reports findings.
+author: BlitheBot
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  version:
+    description: >-
+      Version of @blithedale/mcpguard to install (any npm version or
+      dist-tag).
+    required: false
+    default: latest
+  dir:
+    description: Directory to scan for MCP definition files.
+    required: false
+    default: "."
+  fail-on:
+    description: >-
+      Fail the step if any finding is at or above this severity
+      (critical, high, medium, low, info). Unset means findings never
+      fail the step.
+    required: false
+    default: ""
+  fail-on-empty:
+    description: >-
+      Fail the step when no MCP definition files are discovered ("true" /
+      "false"). Recommended in CI so a moved scan path fails loudly.
+    required: false
+    default: "false"
+  out:
+    description: >-
+      If set, write the Markdown report to this path and upload it as a
+      workflow artifact.
+    required: false
+    default: ""
+  artifact-name:
+    description: Name of the uploaded report artifact (used when out is set).
+    required: false
+    default: mcpguard-report
+
+outputs:
+  exit-code:
+    description: Exit code of the mcpguard scan (0 = passed, 1 = gate tripped).
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install mcpguard
+      shell: bash
+      run: npm install -g "@blithedale/mcpguard@${{ inputs.version }}"
+
+    - name: Run mcpguard scan
+      id: scan
+      shell: bash
+      env:
+        INPUT_DIR: ${{ inputs.dir }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_FAIL_ON_EMPTY: ${{ inputs.fail-on-empty }}
+        INPUT_OUT: ${{ inputs.out }}
+      run: |
+        set +e
+        args=(scan --dir "$INPUT_DIR")
+        if [ -n "$INPUT_FAIL_ON" ]; then
+          args+=(--fail-on "$INPUT_FAIL_ON")
+        fi
+        if [ "$INPUT_FAIL_ON_EMPTY" = "true" ]; then
+          args+=(--fail-on-empty)
+        fi
+        if [ -n "$INPUT_OUT" ]; then
+          args+=(--out "$INPUT_OUT")
+        fi
+        mcpguard "${args[@]}"
+        echo "exit-code=$?" >> "$GITHUB_OUTPUT"
+
+    - name: Upload report artifact
+      if: inputs.out != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.out }}
+        if-no-files-found: warn
+
+    - name: Propagate scan exit code
+      shell: bash
+      run: exit "${{ steps.scan.outputs.exit-code }}"

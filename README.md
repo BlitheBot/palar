@@ -82,6 +82,21 @@ against rug-pull style tool redefinition.
 > PowerShell 7+, and cmd, but Windows PowerShell 5.1 re-encodes piped
 > native output and can mangle the bytes (e.g. prepend a BOM).
 
+## GitHub Action
+
+Add MCPGuard to any repository's CI without installing anything — see
+[`action/README.md`](action/README.md) for full input docs:
+
+```yaml
+steps:
+  - uses: actions/checkout@v4
+  - uses: BlitheBot/MCP/action@v1
+    with:
+      dir: ./mcp-configs
+      fail-on: high
+      fail-on-empty: "true"
+```
+
 ## File discovery
 
 mcpguard finds definitions by naming convention, searching each given path
