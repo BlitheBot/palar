@@ -1,0 +1,40 @@
+{
+  "name": "mcpguard",
+  "version": "0.1.0",
+  "description": "Defensive, read-only static analyzer for local MCP tool and server definition files",
+  "type": "module",
+  "bin": {
+    "mcpguard": "./dist/cli/index.js"
+  },
+  "main": "./dist/cli/index.js",
+  "files": [
+    "dist",
+    "!dist/**/*.test.*"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli/index.ts",
+    "test": "tsc -p tsconfig.json && node --test \"dist/**/*.test.js\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "security",
+    "static-analysis",
+    "audit"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "fast-glob": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

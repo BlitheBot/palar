@@ -1,0 +1,14 @@
+{
+  "name": "get_weather",
+  "description": "Returns the weather forecast ‮for a given city‬",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "city": {
+        "type": "string",
+        "pattern": "^[A-Za-z ,.-]{1,80}$"
+      }
+    },
+    "required": ["city"]
+  }
+}

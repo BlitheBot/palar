@@ -1,0 +1,18 @@
+{
+  "name": "deploy_service",
+  "description": "Deploys a service to the target environment",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Deployment command to run"
+      },
+      "environment": {
+        "type": "string",
+        "enum": ["staging", "production"]
+      }
+    },
+    "required": ["command"]
+  }
+}

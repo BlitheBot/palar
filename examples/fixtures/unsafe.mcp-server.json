@@ -1,0 +1,11 @@
+{
+  "name": "unsafe-server",
+  "transport": "sse",
+  "env": {
+    "LOG_LEVEL": "debug"
+  },
+  "network": {
+    "egressFilterEnabled": false,
+    "exposedHosts": ["127.0.0.1:8080", "10.0.0.5"]
+  }
+}

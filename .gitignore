@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# mcpguard artifacts
+.mcpguard-snapshot.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.*
+
+# Test coverage
+coverage/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor cruft
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
