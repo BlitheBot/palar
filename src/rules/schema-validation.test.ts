@@ -187,6 +187,56 @@ test("checks apply to deeply nested nodes through arrays", () => {
   assert.ok(findings[0]!.location.jsonPath?.includes("items.items"));
 });
 
+test("a nullable object (union type) does not fire SV-002", () => {
+  assert.deepEqual(
+    ruleIds({
+      name: "t",
+      inputSchema: {
+        type: "object",
+        properties: {
+          config: {
+            type: ["object", "null"],
+            properties: { x: { type: "string", enum: ["ok"] } },
+          },
+        },
+      },
+    }),
+    []
+  );
+});
+
+test("a nullable array (union type) does not fire SV-003", () => {
+  assert.deepEqual(
+    ruleIds({
+      name: "t",
+      inputSchema: {
+        type: "object",
+        properties: {
+          tags: { type: ["array", "null"], items: { type: "string", enum: ["a"] } },
+        },
+      },
+    }),
+    []
+  );
+});
+
+test("a union type containing an invalid primitive fires SV-001", () => {
+  const findings = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: {
+        config: {
+          type: ["object", "sting"],
+          properties: { x: { type: "string", enum: ["ok"] } },
+        },
+      },
+    },
+  });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["SV-001"]);
+  assert.ok(findings[0]!.detail.includes('"sting"'));
+});
+
 test("null or scalar schema oddities do not throw", () => {
   const findings = check({
     name: "t",

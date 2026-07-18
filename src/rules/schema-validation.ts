@@ -22,6 +22,29 @@ function isSchemaNode(value: unknown): value is JSONSchemaProperty {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** True when "type" (string or union-array form) includes the wanted type. */
+function typeIncludes(type: unknown, wanted: string): boolean {
+  return type === wanted || (Array.isArray(type) && type.includes(wanted));
+}
+
+/** Every declared type value that is not a valid JSON Schema primitive. */
+function invalidTypeValues(type: unknown): string[] {
+  if (typeof type === "string") {
+    return VALID_TYPES.has(type) ? [] : [type];
+  }
+  if (Array.isArray(type)) {
+    return type
+      .filter((t) => typeof t !== "string" || !VALID_TYPES.has(t))
+      .map((t) => String(t));
+  }
+  return [];
+}
+
+function describeType(type: unknown): string {
+  if (type === undefined) return "missing";
+  return Array.isArray(type) ? JSON.stringify(type) : `"${String(type)}"`;
+}
+
 /** Resolve a local JSON pointer ("#", "#/properties/x", …) against the schema root. */
 function resolveLocalRef(root: JSONSchemaProperty, ref: string): unknown {
   if (ref === "#") return root;
@@ -67,47 +90,50 @@ export const schemaValidationRule: ToolRule = {
       path: string,
       ancestors: JSONSchemaProperty[]
     ): void => {
-      if (typeof node.type === "string" && !VALID_TYPES.has(node.type)) {
+      const rawType: unknown = node.type;
+      const invalid = invalidTypeValues(rawType);
+      if (invalid.length > 0) {
         push(
           "SV-001",
           "high",
-          `Invalid schema type "${node.type}" at "${path}"`,
-          `Tool "${tool.name}" declares "type": "${node.type}", which is not a ` +
-            `valid JSON Schema primitive type. Validators and other audit rules ` +
-            `may silently skip this field because its type never matches, leaving ` +
-            `it effectively unvalidated.`,
-          `Correct "type" to one of: string, number, integer, boolean, object, ` +
+          `Invalid schema type ${invalid.map((t) => `"${t}"`).join(", ")} at "${path}"`,
+          `Tool "${tool.name}" declares "type" ${describeType(rawType)}, which ` +
+            `contains ${invalid.length === 1 ? "a value that is" : "values that are"} ` +
+            `not valid JSON Schema primitive types. Validators and other audit ` +
+            `rules may silently skip this field because its type never matches, ` +
+            `leaving it effectively unvalidated.`,
+          `Correct "type" to use only: string, number, integer, boolean, object, ` +
             `array, null.`,
           path
         );
       }
 
       const hasProperties = isSchemaNode(node.properties);
-      if (hasProperties && node.type !== "object") {
+      if (hasProperties && !typeIncludes(rawType, "object")) {
         push(
           "SV-002",
           "medium",
           `"properties" declared on a non-object node at "${path}"`,
           `Tool "${tool.name}" declares "properties" on a schema node whose ` +
-            `"type" is ${node.type === undefined ? "missing" : `"${node.type}"`}. ` +
-            `JSON Schema only applies "properties" to objects, so these ` +
-            `declarations are dead weight and the author's intended constraints ` +
-            `are not enforced.`,
-          `Set "type": "object" on this node (or remove the stray "properties").`,
+            `"type" is ${describeType(rawType)}. JSON Schema only applies ` +
+            `"properties" to objects, so these declarations are dead weight and ` +
+            `the author's intended constraints are not enforced.`,
+          `Set "type": "object" (or include "object" in the type array) on this ` +
+            `node, or remove the stray "properties".`,
           path
         );
       }
 
-      if (node.items !== undefined && node.type !== "array") {
+      if (node.items !== undefined && !typeIncludes(rawType, "array")) {
         push(
           "SV-003",
           "medium",
           `"items" declared on a non-array node at "${path}"`,
           `Tool "${tool.name}" declares "items" on a schema node whose "type" is ` +
-            `${node.type === undefined ? "missing" : `"${node.type}"`}. JSON ` +
-            `Schema only applies "items" to arrays, so the item constraints are ` +
-            `not enforced.`,
-          `Set "type": "array" on this node (or remove the stray "items").`,
+            `${describeType(rawType)}. JSON Schema only applies "items" to ` +
+            `arrays, so the item constraints are not enforced.`,
+          `Set "type": "array" (or include "array" in the type array) on this ` +
+            `node, or remove the stray "items".`,
           path
         );
       }
@@ -136,6 +162,10 @@ export const schemaValidationRule: ToolRule = {
         }
       }
 
+      // Known limitation: only cycles through the walk path are detected
+      // (a $ref resolving to the node itself or an ancestor). Indirect
+      // cycles between sibling definitions (A -> B -> A where neither is
+      // an ancestor of the other) are not followed.
       const ref = node["$ref"];
       if (typeof ref === "string") {
         const target = resolveLocalRef(root, ref);
