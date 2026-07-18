@@ -46,6 +46,47 @@ function describeType(type: unknown): string {
   return Array.isArray(type) ? JSON.stringify(type) : `"${String(type)}"`;
 }
 
+/** Declared type(s) as a string list, or null when absent/unusable. */
+function declaredTypes(type: unknown): string[] | null {
+  if (typeof type === "string") return [type];
+  if (Array.isArray(type)) {
+    const strings = type.filter((t): t is string => typeof t === "string");
+    return strings.length > 0 ? strings : null;
+  }
+  return null;
+}
+
+function valueMatchesType(value: unknown, t: string): boolean {
+  switch (t) {
+    case "string":
+      return typeof value === "string";
+    case "number":
+      return typeof value === "number";
+    case "integer":
+      return typeof value === "number" && Number.isInteger(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "null":
+      return value === null;
+    case "array":
+      return Array.isArray(value);
+    case "object":
+      return typeof value === "object" && value !== null && !Array.isArray(value);
+    default:
+      return false;
+  }
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+/** Short, safe rendering of an enum value for finding details. */
+function showValue(value: unknown): string {
+  const s = JSON.stringify(value) ?? "undefined";
+  return s.length > 40 ? `${s.slice(0, 37)}...` : s;
+}
+
 /** Resolve a local JSON pointer ("#", "#/properties/x", …) against the schema root. */
 function resolveLocalRef(root: JSONSchemaProperty, ref: string): unknown {
   if (ref === "#") return root;
@@ -174,6 +215,134 @@ export const schemaValidationRule: ToolRule = {
               `"properties", or remove the stale name(s) from "required".`,
             path
           );
+        }
+      }
+
+      // --- Semantic contradiction checks (SV-006..SV-011): shapes that are
+      // valid JSON Schema but logically impossible or inconsistent. ---
+
+      const minLength = asNumber(node.minLength);
+      const maxLength = asNumber(node.maxLength);
+      if (minLength !== undefined && maxLength !== undefined && minLength > maxLength) {
+        push(
+          "SV-006",
+          "medium",
+          `minLength exceeds maxLength at "${path}"`,
+          `Tool "${tool.name}" declares minLength (${minLength}) greater than ` +
+            `maxLength (${maxLength}) — this constraint can never be satisfied, ` +
+            `so every input fails validation (or the validator ignores it).`,
+          `Make minLength <= maxLength, or remove whichever bound is wrong.`,
+          path
+        );
+      }
+
+      const minimum = asNumber(node.minimum);
+      const maximum = asNumber(node.maximum);
+      if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
+        push(
+          "SV-007",
+          "medium",
+          `minimum exceeds maximum at "${path}"`,
+          `Tool "${tool.name}" declares minimum (${minimum}) greater than ` +
+            `maximum (${maximum}) — no number satisfies both bounds.`,
+          `Make minimum <= maximum, or remove whichever bound is wrong.`,
+          path
+        );
+      }
+      const minItems = asNumber(node.minItems);
+      const maxItems = asNumber(node.maxItems);
+      if (minItems !== undefined && maxItems !== undefined && minItems > maxItems) {
+        push(
+          "SV-007",
+          "medium",
+          `minItems exceeds maxItems at "${path}"`,
+          `Tool "${tool.name}" declares minItems (${minItems}) greater than ` +
+            `maxItems (${maxItems}) — no array length satisfies both bounds.`,
+          `Make minItems <= maxItems, or remove whichever bound is wrong.`,
+          path
+        );
+      }
+
+      const types = declaredTypes(rawType);
+      if (types !== null) {
+        const numericLike = types.some((t) => t === "number" || t === "integer");
+        if (!numericLike && (node.minimum !== undefined || node.maximum !== undefined)) {
+          push(
+            "SV-008",
+            "medium",
+            `Numeric constraint on non-numeric type at "${path}"`,
+            `Tool "${tool.name}" declares minimum/maximum on a node whose type ` +
+              `is ${describeType(rawType)}. Numeric bounds only apply to ` +
+              `number/integer, so this constraint is never enforced.`,
+            `Change the type to number or integer, or remove the numeric bound.`,
+            path
+          );
+        }
+        const stringLike = types.includes("string");
+        const stringConstraints = ["pattern", "minLength", "maxLength", "format"]
+          .filter((k) => (node as Record<string, unknown>)[k] !== undefined);
+        if (!stringLike && stringConstraints.length > 0) {
+          push(
+            "SV-009",
+            "medium",
+            `String constraint on non-string type at "${path}"`,
+            `Tool "${tool.name}" declares ${stringConstraints.join(", ")} on a ` +
+              `node whose type is ${describeType(rawType)}. String constraints ` +
+              `only apply to strings, so they are never enforced.`,
+            `Change the type to string, or remove the string constraint(s).`,
+            path
+          );
+        }
+      }
+
+      if (Array.isArray(node.enum)) {
+        if (types !== null) {
+          const mismatched = node.enum.filter(
+            (v) => !types.some((t) => valueMatchesType(v, t))
+          );
+          if (mismatched.length > 0) {
+            push(
+              "SV-010",
+              "medium",
+              `enum values do not match declared type at "${path}"`,
+              `Tool "${tool.name}" declares type ${describeType(rawType)} but ` +
+                `the enum contains ${mismatched.map(showValue).join(", ")}, ` +
+                `which do not match that type — those values can never validate.`,
+              `Align the enum values with the declared type (or fix the type).`,
+              path
+            );
+          }
+        }
+        if (node.enum.length === 0) {
+          push(
+            "SV-011",
+            "medium",
+            `Empty enum at "${path}"`,
+            `Tool "${tool.name}" declares an enum with zero entries — no value ` +
+              `can ever satisfy it, so every input fails validation here.`,
+            `Add the permitted values to the enum, or remove it.`,
+            path
+          );
+        } else {
+          const seen = new Set<string>();
+          const duplicates = new Set<string>();
+          for (const v of node.enum) {
+            const key = JSON.stringify(v) ?? "undefined";
+            if (seen.has(key)) duplicates.add(key);
+            seen.add(key);
+          }
+          if (duplicates.size > 0) {
+            push(
+              "SV-011",
+              "medium",
+              `Duplicate enum values at "${path}"`,
+              `Tool "${tool.name}" declares an enum with duplicate value(s): ` +
+                `${[...duplicates].join(", ")}. Duplicates are dead entries that ` +
+                `usually indicate a copy-paste or generation error.`,
+              `Remove the duplicate enum entries.`,
+              path
+            );
+          }
         }
       }
 

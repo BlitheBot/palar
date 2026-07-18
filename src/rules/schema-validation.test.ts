@@ -237,6 +237,127 @@ test("a union type containing an invalid primitive fires SV-001", () => {
   assert.ok(findings[0]!.detail.includes('"sting"'));
 });
 
+test("minLength > maxLength fires SV-006", () => {
+  const findings = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: { q: { type: "string", minLength: 100, maxLength: 5 } },
+    },
+  });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["SV-006"]);
+  assert.ok(findings[0]!.detail.includes("minLength (100)"));
+  assert.ok(findings[0]!.detail.includes("maxLength (5)"));
+});
+
+test("minimum > maximum and minItems > maxItems fire SV-007", () => {
+  assert.deepEqual(
+    ruleIds({
+      name: "t",
+      inputSchema: {
+        type: "object",
+        properties: { n: { type: "number", minimum: 10, maximum: 1 } },
+      },
+    }),
+    ["SV-007"]
+  );
+  assert.deepEqual(
+    ruleIds({
+      name: "t",
+      inputSchema: {
+        type: "object",
+        properties: {
+          list: { type: "array", minItems: 5, maxItems: 2, items: { type: "string" } },
+        },
+      },
+    }),
+    ["SV-007"]
+  );
+});
+
+test("numeric constraint on a non-numeric type fires SV-008", () => {
+  assert.deepEqual(
+    ruleIds({
+      name: "t",
+      inputSchema: {
+        type: "object",
+        properties: { s: { type: "string", minimum: 3 } },
+      },
+    }),
+    ["SV-008"]
+  );
+});
+
+test("string constraint on a non-string type fires SV-009", () => {
+  const findings = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: { n: { type: "integer", pattern: "^\\d+$" } },
+    },
+  });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["SV-009"]);
+  assert.ok(findings[0]!.detail.includes("pattern"));
+});
+
+test("enum values mismatching the declared type fire SV-010", () => {
+  const findings = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: { mode: { type: "string", enum: ["fast", 2, true] } },
+    },
+  });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["SV-010"]);
+  assert.ok(findings[0]!.detail.includes("2"));
+  assert.ok(findings[0]!.detail.includes("true"));
+});
+
+test("empty and duplicate enums fire SV-011", () => {
+  assert.deepEqual(
+    ruleIds({
+      name: "t",
+      inputSchema: {
+        type: "object",
+        properties: { mode: { type: "string", enum: [] } },
+      },
+    }),
+    ["SV-011"]
+  );
+  const dup = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: { mode: { type: "string", enum: ["a", "b", "a"] } },
+    },
+  });
+  assert.deepEqual(dup.map((f) => f.ruleId), ["SV-011"]);
+  assert.ok(dup[0]!.detail.includes('"a"'));
+});
+
+test("a schema with rich but consistent constraints has no contradictions", () => {
+  assert.deepEqual(
+    ruleIds({
+      name: "t",
+      inputSchema: {
+        type: "object",
+        properties: {
+          q: { type: "string", minLength: 1, maxLength: 80, pattern: "^[a-z ]+$" },
+          n: { type: "integer", minimum: 0, maximum: 100 },
+          tags: {
+            type: "array",
+            minItems: 0,
+            maxItems: 10,
+            items: { type: "string", enum: ["a", "b"] },
+          },
+          nullable: { type: ["number", "null"], minimum: 0, enum: [0, 1, null] },
+        },
+      },
+    }),
+    []
+  );
+});
+
 test("schema-validation stops at the nesting depth limit with a warning", () => {
   let node: Record<string, unknown> = { type: "string" };
   for (let i = 0; i < 100; i++) {
