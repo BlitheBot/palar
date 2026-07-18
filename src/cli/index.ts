@@ -14,7 +14,7 @@ import {
 } from "../core/compliance.js";
 import {
   buildSnapshot,
-  diffSnapshots,
+  diffSnapshotsDetailed,
   loadSnapshot,
   saveSnapshot,
 } from "../core/snapshot.js";
@@ -253,7 +253,7 @@ program
     for (const warning of warnings) {
       console.error(chalk.yellow(`warning: ${warning}`));
     }
-    const diff = diffSnapshots(baseline, current);
+    const diff = diffSnapshotsDetailed(baseline, current);
     if (diff.length === 0) {
       console.log(
         chalk.green(`no drift against ${opts.snapshot} (${baseline.createdAt})`)
@@ -261,13 +261,33 @@ program
       return;
     }
     for (const entry of diff) {
-      const color =
-        entry.kind === "added"
-          ? chalk.cyan
-          : entry.kind === "removed"
+      switch (entry.kind) {
+        case "added":
+          console.log(chalk.cyan(`added: ${entry.toolName}`));
+          break;
+        case "removed":
+          console.log(chalk.red(`removed: ${entry.toolName}`));
+          break;
+        case "regressed":
+          console.log(
+            chalk.red(
+              `regressed: ${entry.toolName} — security regression: ${entry.reason}`
+            )
+          );
+          break;
+        case "changed":
+          console.log(chalk.yellow(`changed: ${entry.toolName}`));
+          break;
+      }
+      for (const change of entry.changes) {
+        const color =
+          change.classification === "loosening"
             ? chalk.red
-            : chalk.yellow;
-      console.log(color(`${entry.kind}: ${entry.toolName}`));
+            : change.classification === "tightening"
+              ? chalk.green
+              : chalk.dim;
+        console.log(color(`  [${change.classification}] ${change.description}`));
+      }
     }
     if (diff.some((entry) => entry.kind !== "added")) {
       process.exitCode = 1;

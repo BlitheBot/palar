@@ -80,12 +80,37 @@ export interface AuditScore {
   grade: LetterGrade;
 }
 
-/** A baseline of tool definition hashes, used to detect drift over time. */
+/** Per-property structural summary stored in a snapshot for semantic diffing. */
+export interface PropertySummary {
+  type?: string | string[];
+  /** Whether the property is listed in its parent's "required" array. */
+  required?: boolean;
+  /**
+   * Scalar constraints (pattern, format, minLength, maxLength, minimum,
+   * maximum, minItems, maxItems) plus enumCount — enum values themselves
+   * are not stored, only their count, to bound snapshot size.
+   */
+  constraints: Record<string, string | number>;
+}
+
+/** One tool's entry in a v2 snapshot. */
+export interface ToolSnapshotEntry {
+  /** SHA-256 of the canonicalized definition (the change detector). */
+  hash: string;
+  /** Length of the description (0 when absent); text is not stored. */
+  descriptionLength: number;
+  /** Flattened property path ("config.command", "args[]") → summary. */
+  properties: Record<string, PropertySummary>;
+}
+
+/** A baseline of tool definitions, used to detect drift over time. */
 export interface SchemaSnapshot {
+  /** 2 for structured snapshots; absent on legacy hash-only (v1) files. */
+  snapshotVersion?: number;
   /** ISO-8601 timestamp of when the snapshot was taken. */
   createdAt: string;
-  /** Tool name → SHA-256 hash of its canonicalized definition. */
-  tools: Record<string, string>;
+  /** Tool name → entry (v2) or bare hash string (legacy v1). */
+  tools: Record<string, ToolSnapshotEntry | string>;
 }
 
 /** The result of a full audit run. */

@@ -70,10 +70,29 @@ discovered tool definition, for later drift detection.
 
 ### `mcpguard drift`
 
-Compares current tool definitions against a saved baseline and prints
-color-coded changes (cyan = added, red = removed, yellow = changed).
-Exits `1` if anything changed or was removed — suitable as a CI gate
-against rug-pull style tool redefinition.
+Compares current tool definitions against a saved baseline. Snapshots
+store a bounded structural summary per tool (property paths with scalar
+constraints, enum *counts*, and description *length* — never raw enum
+values or description text), so drift reports *what* changed, not just
+that a hash differs. Each specific change is classified as a
+**tightening** (e.g. pattern added), a **loosening** (e.g. pattern
+removed, enum expanded, required flag dropped, max bound raised), or
+**neutral** (e.g. a description reword). A changed tool with any
+loosening change is reported as `regressed` — a security regression —
+with a reason line, e.g.:
+
+```
+regressed: runner — security regression: pattern removed from parameter "command"
+  [loosening] pattern removed from parameter "command"
+  [neutral] description length changed from 30 to 37 characters
+added: new_tool
+```
+
+Exits `1` if anything changed, regressed, or was removed (additions alone
+exit `0`) — suitable as a CI gate against rug-pull style tool
+redefinition. Baselines from older mcpguard versions (hash-only) still
+diff, but degrade to plain `changed` entries without semantic detail —
+re-run `mcpguard snapshot` to upgrade the baseline.
 
 - `--dir <dir...>` — directories to scan
 - `--snapshot <file>` — baseline to compare against (default `.mcpguard-snapshot.json`)
