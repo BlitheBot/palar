@@ -39,6 +39,19 @@ report plus a colored one-line score summary.
 - `--dir <dir...>` — additional directories to scan (merged with positional paths; defaults to the current directory)
 - `--json` — print the raw `AuditResult` as JSON on stdout (status goes to stderr, so piping stays clean)
 - `--out <file>` — write the report to a file instead of stdout
+- `--fail-on <severity>` — exit `1` if any finding is at or above the given
+  severity (`critical`, `high`, `medium`, `low`, or `info`), in every output
+  mode. This is the flag that makes `scan` usable as a CI gate:
+
+  ```sh
+  mcpguard scan --dir ./mcp-configs --fail-on high
+  ```
+
+  A red status line states what triggered the failure. Without `--fail-on`
+  (or when no finding meets the threshold), `scan` exits `0` regardless of
+  findings. When no definition files are discovered at all, `scan` exits `0`
+  even with `--fail-on` — there is nothing to evaluate; pair it with
+  `mcpguard drift` in CI if you also want to catch definitions disappearing.
 
 ### `mcpguard snapshot`
 

@@ -18,7 +18,14 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
   info: 0,
 };
 
-const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
+/** Most severe first; lower index = more severe. */
+export const SEVERITY_ORDER: Severity[] = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "info",
+];
 
 /**
  * Start at 100 and subtract per-finding severity weights, dampened by
@@ -45,7 +52,7 @@ function toGrade(value: number): LetterGrade {
   return "F";
 }
 
-function severityRank(severity: Severity): number {
+export function severityRank(severity: Severity): number {
   return SEVERITY_ORDER.indexOf(severity);
 }
 

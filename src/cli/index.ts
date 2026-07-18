@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 import { writeFile } from "node:fs/promises";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import chalk from "chalk";
+import type { Severity } from "../core/types.js";
 import { discover } from "../discovery/index.js";
 import { runAudit } from "../core/auditor.js";
-import { renderMarkdownReport } from "../core/compliance.js";
+import {
+  renderMarkdownReport,
+  SEVERITY_ORDER,
+  severityRank,
+} from "../core/compliance.js";
 import {
   buildSnapshot,
   diffSnapshots,
@@ -28,10 +33,16 @@ program
   .option("--dir <dir...>", "additional directories to scan")
   .option("--json", "output the raw AuditResult as JSON")
   .option("--out <file>", "write the report to a file instead of stdout")
+  .addOption(
+    new Option(
+      "--fail-on <severity>",
+      "exit 1 if any finding is at or above this severity"
+    ).choices(SEVERITY_ORDER)
+  )
   .action(
     async (
       paths: string[],
-      opts: { dir?: string[]; json?: boolean; out?: string }
+      opts: { dir?: string[]; json?: boolean; out?: string; failOn?: Severity }
     ) => {
       const roots = [...paths, ...(opts.dir ?? [])];
       const discovered = await discover(roots);
@@ -86,6 +97,20 @@ program
               : "")
         )
       );
+
+      if (opts.failOn) {
+        const failing = result.findings.filter(
+          (f) => severityRank(f.severity) <= severityRank(opts.failOn!)
+        ).length;
+        if (failing > 0) {
+          logStatus(
+            chalk.red(
+              `Failing: ${failing} finding(s) at or above '${opts.failOn}' severity`
+            )
+          );
+          process.exitCode = 1;
+        }
+      }
     }
   );
 
