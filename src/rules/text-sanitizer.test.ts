@@ -61,6 +61,42 @@ test("suspicious characters in the tool name are scanned too", () => {
   assert.ok(findings[0]!.location.jsonPath?.endsWith(".name"));
 });
 
+const CYRILLIC_A = String.fromCodePoint(0x0430);
+const GREEK_OMICRON = String.fromCodePoint(0x03bf);
+const FULLWIDTH_P = String.fromCodePoint(0xff50);
+
+test("a Latin name with an embedded Cyrillic homoglyph fires TS-006", () => {
+  const findings = check({ name: `p${CYRILLIC_A}y` });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["TS-006"]);
+  assert.equal(findings[0]!.severity, "high");
+  assert.ok(findings[0]!.detail.includes("U+0430"));
+  assert.ok(findings[0]!.detail.includes("Cyrillic"));
+});
+
+test("a Greek look-alike inside a Latin word fires TS-006", () => {
+  const findings = check({ name: `l${GREEK_OMICRON}g_tool` });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["TS-006"]);
+  assert.ok(findings[0]!.detail.includes("U+03BF"));
+});
+
+test("a compatibility form (fullwidth letter) fires TS-006 via NFKC", () => {
+  const findings = check({ name: `${FULLWIDTH_P}ay` });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["TS-006"]);
+  assert.ok(findings[0]!.detail.includes("U+FF50"));
+  assert.ok(findings[0]!.detail.includes("NFKC"));
+});
+
+test("plain ASCII names do not fire TS-006", () => {
+  assert.deepEqual(check({ name: "payment_tool" }), []);
+});
+
+test("a consistently non-Latin name does not fire TS-006", () => {
+  const cyrillicOnly = [0x043e, 0x043f, 0x043b, 0x0430, 0x0442, 0x0430]
+    .map((cp) => String.fromCodePoint(cp))
+    .join("");
+  assert.deepEqual(check({ name: cyrillicOnly }), []);
+});
+
 test("non-string description does not throw", () => {
   assert.deepEqual(check({ name: "clean_tool", description: 123 }), []);
 });

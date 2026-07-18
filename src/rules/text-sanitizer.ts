@@ -76,6 +76,59 @@ function formatCodePoint(cp: number): string {
   return `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
 }
 
+const LATIN_LETTER = /[A-Za-z]/;
+/**
+ * Scripts whose letters commonly pass as Latin look-alikes. Detection is
+ * script-mixing based (Latin + one of these inside a single identifier
+ * word) rather than an enumerated confusables table — broader coverage of
+ * the same spoofing attack with nothing to maintain. A name written
+ * consistently in one non-Latin script never fires.
+ */
+const CONFUSABLE_SCRIPTS: { script: string; matches: RegExp }[] = [
+  { script: "Cyrillic", matches: /[Ѐ-ӿ]/u },
+  { script: "Greek", matches: /[Ͱ-Ͽ]/u },
+];
+
+interface ConfusableHit {
+  cp: number;
+  reason: string;
+}
+
+/** Mixed-script look-alikes and NFKC compatibility forms in an identifier. */
+function detectConfusables(name: string): ConfusableHit[] {
+  const hits = new Map<number, ConfusableHit>();
+  const words = name.split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 0);
+  for (const word of words) {
+    if (!LATIN_LETTER.test(word)) continue;
+    for (const char of word) {
+      const cp = char.codePointAt(0);
+      if (cp === undefined) continue;
+      for (const { script, matches } of CONFUSABLE_SCRIPTS) {
+        if (matches.test(char)) {
+          hits.set(cp, {
+            cp,
+            reason: `${script} letter inside an otherwise-Latin word`,
+          });
+        }
+      }
+    }
+  }
+  if (name.normalize("NFKC") !== name) {
+    for (const char of name) {
+      if (char.normalize("NFKC") !== char) {
+        const cp = char.codePointAt(0);
+        if (cp !== undefined && !hits.has(cp)) {
+          hits.set(cp, {
+            cp,
+            reason: "compatibility form that changes under NFKC normalization",
+          });
+        }
+      }
+    }
+  }
+  return [...hits.values()].sort((a, b) => a.cp - b.cp);
+}
+
 interface CategoryHits {
   count: number;
   codePoints: Set<number>;
@@ -151,6 +204,34 @@ export const textSanitizerRule: ToolRule = {
           remediation:
             `Strip or reject these code points from the "${fieldName}" field, and ` +
             `review the field's visible text against its raw bytes before trusting it.`,
+          complianceRefs: [...COMPLIANCE_REFS],
+        });
+      }
+    }
+
+    if (typeof tool.name === "string") {
+      const confusables = detectConfusables(tool.name);
+      if (confusables.length > 0) {
+        const listed = confusables
+          .map((h) => `${formatCodePoint(h.cp)} (${h.reason})`)
+          .join("; ");
+        findings.push({
+          ruleId: "TS-006",
+          pillar: "text-sanitization",
+          severity: "high",
+          title: `Confusable characters in tool name "${tool.name}"`,
+          detail:
+            `The name of tool "${tool.name}" contains character(s) that can ` +
+            `visually impersonate a different identifier: ${listed}. Mixing ` +
+            `Latin with look-alike letters from another script (or using ` +
+            `compatibility forms) is how a malicious tool spoofs a ` +
+            `legitimate-looking name. A name written consistently in a single ` +
+            `script does not trigger this check.`,
+          location: { file: ctx.file, jsonPath: `tools["${tool.name}"].name` },
+          remediation:
+            `Rename the tool using a single script (plain ASCII if the rest of ` +
+            `the name is ASCII), and treat an unexplained look-alike character ` +
+            `as a spoofing attempt.`,
           complianceRefs: [...COMPLIANCE_REFS],
         });
       }
