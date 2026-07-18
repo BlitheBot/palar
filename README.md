@@ -41,17 +41,24 @@ report plus a colored one-line score summary.
 - `--out <file>` — write the report to a file instead of stdout
 - `--fail-on <severity>` — exit `1` if any finding is at or above the given
   severity (`critical`, `high`, `medium`, `low`, or `info`), in every output
-  mode. This is the flag that makes `scan` usable as a CI gate:
+  mode. A red status line states what triggered the failure. Without
+  `--fail-on` (or when no finding meets the threshold), `scan` exits `0`
+  regardless of findings.
+- `--fail-on-empty` — exit `1` when no definition files are discovered at
+  all (off by default: normally an empty scan exits `0`, since there is
+  nothing to evaluate).
+
+  Together these make `scan` usable as a CI gate:
 
   ```sh
-  mcpguard scan --dir ./mcp-configs --fail-on high
+  mcpguard scan --dir ./mcp-configs --fail-on high --fail-on-empty
   ```
 
-  A red status line states what triggered the failure. Without `--fail-on`
-  (or when no finding meets the threshold), `scan` exits `0` regardless of
-  findings. When no definition files are discovered at all, `scan` exits `0`
-  even with `--fail-on` — there is nothing to evaluate; pair it with
-  `mcpguard drift` in CI if you also want to catch definitions disappearing.
+  Use both in CI: `--fail-on` catches dangerous definitions, while
+  `--fail-on-empty` catches a moved or misconfigured scan path — which
+  should fail loudly, not silently pass as "clean." Pair with
+  `mcpguard drift` to also catch individual definitions disappearing
+  between runs.
 
 ### `mcpguard snapshot`
 

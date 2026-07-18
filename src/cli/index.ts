@@ -39,18 +39,34 @@ program
       "exit 1 if any finding is at or above this severity"
     ).choices(SEVERITY_ORDER)
   )
+  .option("--fail-on-empty", "exit 1 when no definition files are discovered")
   .action(
     async (
       paths: string[],
-      opts: { dir?: string[]; json?: boolean; out?: string; failOn?: Severity }
+      opts: {
+        dir?: string[];
+        json?: boolean;
+        out?: string;
+        failOn?: Severity;
+        failOnEmpty?: boolean;
+      }
     ) => {
       const roots = [...paths, ...(opts.dir ?? [])];
       const discovered = await discover(roots);
 
       const nothingFound =
         discovered.tools.length === 0 && discovered.servers.length === 0;
+      const where = roots.length > 0 ? roots.join(", ") : process.cwd();
+      const failEmpty = () => {
+        console[opts.json ? "error" : "log"](
+          chalk.red(
+            `Failing: no MCP tool or server definitions found under ${where} — ` +
+              `--fail-on-empty is set`
+          )
+        );
+        process.exitCode = 1;
+      };
       if (nothingFound && !opts.json) {
-        const where = roots.length > 0 ? roots.join(", ") : process.cwd();
         console.log(
           chalk.yellow(
             `No MCP tool or server definition files found under: ${where}`
@@ -66,6 +82,7 @@ program
         for (const warning of discovered.warnings) {
           console.log(chalk.dim(`warning: ${warning}`));
         }
+        if (opts.failOnEmpty) failEmpty();
         return;
       }
 
@@ -111,6 +128,8 @@ program
           process.exitCode = 1;
         }
       }
+
+      if (opts.failOnEmpty && nothingFound) failEmpty();
     }
   );
 
