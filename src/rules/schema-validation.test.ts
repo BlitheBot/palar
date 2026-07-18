@@ -237,6 +237,27 @@ test("a union type containing an invalid primitive fires SV-001", () => {
   assert.ok(findings[0]!.detail.includes('"sting"'));
 });
 
+test("schema-validation stops at the nesting depth limit with a warning", () => {
+  let node: Record<string, unknown> = { type: "string" };
+  for (let i = 0; i < 100; i++) {
+    node = { type: "object", properties: { child: node } };
+  }
+  const warnings: string[] = [];
+  const findings = schemaValidationRule.check(
+    { name: "deep", inputSchema: node } as unknown as MCPToolDefinition,
+    {
+      file: "deep.json",
+      config: {
+        limits: { maxFileSize: 1, maxNestingDepth: 5, maxSchemaNodes: 5000 },
+      },
+      warn: (m) => warnings.push(m),
+    }
+  );
+  assert.ok(Array.isArray(findings));
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0]!.includes("nesting depth limit (5)"));
+});
+
 test("null or scalar schema oddities do not throw", () => {
   const findings = check({
     name: "t",

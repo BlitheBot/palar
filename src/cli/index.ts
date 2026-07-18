@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { writeFile } from "node:fs/promises";
-import { Command, Option } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import chalk from "chalk";
 import type { Severity } from "../core/types.js";
+import type { ResolvedConfig } from "../core/config.js";
+import { DEFAULT_LIMITS } from "../core/config.js";
 import { discover } from "../discovery/index.js";
 import { runAudit } from "../core/auditor.js";
 import {
@@ -19,6 +21,52 @@ import {
 
 const program = new Command();
 
+function positiveInt(value: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new InvalidArgumentError("must be a positive integer");
+  }
+  return n;
+}
+
+interface LimitOpts {
+  maxFileSize?: number;
+  maxNestingDepth?: number;
+  maxSchemaNodes?: number;
+}
+
+function resolveLimitsConfig(opts: LimitOpts): ResolvedConfig {
+  return {
+    limits: {
+      maxFileSize: opts.maxFileSize ?? DEFAULT_LIMITS.maxFileSize,
+      maxNestingDepth: opts.maxNestingDepth ?? DEFAULT_LIMITS.maxNestingDepth,
+      maxSchemaNodes: opts.maxSchemaNodes ?? DEFAULT_LIMITS.maxSchemaNodes,
+    },
+  };
+}
+
+const LIMIT_OPTIONS: [flag: string, description: string][] = [
+  [
+    "--max-file-size <bytes>",
+    `max definition file size in bytes (default ${DEFAULT_LIMITS.maxFileSize})`,
+  ],
+  [
+    "--max-nesting-depth <n>",
+    `max schema nesting depth walked (default ${DEFAULT_LIMITS.maxNestingDepth})`,
+  ],
+  [
+    "--max-schema-nodes <n>",
+    `max schema nodes visited per tool per rule (default ${DEFAULT_LIMITS.maxSchemaNodes})`,
+  ],
+];
+
+function addLimitOptions(cmd: Command): Command {
+  for (const [flag, description] of LIMIT_OPTIONS) {
+    cmd.option(flag, description, positiveInt);
+  }
+  return cmd;
+}
+
 program
   .name("mcpguard")
   .description(
@@ -26,9 +74,10 @@ program
   )
   .version("0.1.0");
 
-program
-  .command("scan")
-  .description("Scan local MCP definition files and report findings")
+addLimitOptions(
+  program
+    .command("scan")
+    .description("Scan local MCP definition files and report findings")
   .argument("[paths...]", "files or directories to scan (default: cwd)")
   .option("--dir <dir...>", "additional directories to scan")
   .option("--json", "output the raw AuditResult as JSON")
@@ -39,20 +88,23 @@ program
       "exit 1 if any finding is at or above this severity"
     ).choices(SEVERITY_ORDER)
   )
-  .option("--fail-on-empty", "exit 1 when no definition files are discovered")
-  .action(
-    async (
-      paths: string[],
-      opts: {
-        dir?: string[];
-        json?: boolean;
-        out?: string;
-        failOn?: Severity;
-        failOnEmpty?: boolean;
-      }
-    ) => {
+    .option("--fail-on-empty", "exit 1 when no definition files are discovered")
+).action(
+  async (
+    paths: string[],
+    opts: {
+      dir?: string[];
+      json?: boolean;
+      out?: string;
+      failOn?: Severity;
+      failOnEmpty?: boolean;
+    } & LimitOpts
+  ) => {
+      const config = resolveLimitsConfig(opts);
       const roots = [...paths, ...(opts.dir ?? [])];
-      const discovered = await discover(roots);
+      const discovered = await discover(roots, {
+        maxFileSize: config.limits.maxFileSize,
+      });
 
       const nothingFound =
         discovered.tools.length === 0 && discovered.servers.length === 0;
@@ -86,7 +138,7 @@ program
         return;
       }
 
-      const result = runAudit(discovered);
+      const result = runAudit(discovered, config);
 
       const output = opts.json
         ? JSON.stringify(result, null, 2)
@@ -133,17 +185,22 @@ program
     }
   );
 
-program
-  .command("snapshot")
-  .description("Record a baseline of tool definition hashes for drift detection")
-  .option("--dir <dir...>", "directories to scan")
-  .option("--out <file>", "snapshot file to write", ".mcpguard-snapshot.json")
-  .action(async (opts: { dir?: string[]; out: string }) => {
-    const discovered = await discover(opts.dir ?? []);
+addLimitOptions(
+  program
+    .command("snapshot")
+    .description("Record a baseline of tool definition hashes for drift detection")
+    .option("--dir <dir...>", "directories to scan")
+    .option("--out <file>", "snapshot file to write", ".mcpguard-snapshot.json")
+).action(
+  async (opts: { dir?: string[]; out: string } & LimitOpts) => {
+    const config = resolveLimitsConfig(opts);
+    const discovered = await discover(opts.dir ?? [], {
+      maxFileSize: config.limits.maxFileSize,
+    });
     for (const warning of discovered.warnings) {
       console.error(chalk.dim(`warning: ${warning}`));
     }
-    const { snapshot, warnings } = buildSnapshot(discovered);
+    const { snapshot, warnings } = buildSnapshot(discovered, config.limits);
     for (const warning of warnings) {
       console.error(chalk.yellow(`warning: ${warning}`));
     }

@@ -5,6 +5,7 @@
  */
 import type { Finding, JSONSchemaProperty, MCPToolDefinition } from "../core/types.js";
 import type { RuleContext, ToolRule } from "./index.js";
+import { DEFAULT_LIMITS } from "../core/config.js";
 
 const SENSITIVE_KEYWORDS = new Set([
   "command",
@@ -52,14 +53,24 @@ function isConstrained(prop: JSONSchemaProperty): boolean {
   );
 }
 
+interface WalkState {
+  nodesVisited: number;
+  maxDepth: number;
+  maxNodes: number;
+  depthHit: boolean;
+  nodesHit: boolean;
+}
+
 function walkProperties(
   properties: Record<string, JSONSchemaProperty>,
   parentPath: string,
-  visit: (name: string, path: string, prop: JSONSchemaProperty) => void
+  visit: (name: string, path: string, prop: JSONSchemaProperty) => void,
+  depth: number,
+  state: WalkState
 ): void {
   for (const [name, prop] of Object.entries(properties)) {
     const path = parentPath === "" ? name : `${parentPath}.${name}`;
-    walkProp(name, path, prop, visit);
+    walkProp(name, path, prop, visit, depth, state);
   }
 }
 
@@ -67,17 +78,28 @@ function walkProp(
   name: string,
   path: string,
   prop: JSONSchemaProperty,
-  visit: (name: string, path: string, prop: JSONSchemaProperty) => void
+  visit: (name: string, path: string, prop: JSONSchemaProperty) => void,
+  depth: number,
+  state: WalkState
 ): void {
   // Raw JSON may put null or a scalar where a schema object belongs.
   if (typeof prop !== "object" || prop === null) return;
+  if (depth > state.maxDepth) {
+    state.depthHit = true;
+    return;
+  }
+  if (state.nodesVisited >= state.maxNodes) {
+    state.nodesHit = true;
+    return;
+  }
+  state.nodesVisited += 1;
   visit(name, path, prop);
   if (prop.properties) {
-    walkProperties(prop.properties, path, visit);
+    walkProperties(prop.properties, path, visit, depth + 1, state);
   }
   if (prop.items) {
     // Array items share the array's name; keep the path traceable.
-    walkProp(name, `${path}[]`, prop.items, visit);
+    walkProp(name, `${path}[]`, prop.items, visit, depth + 1, state);
   }
 }
 
@@ -85,6 +107,15 @@ export const inputValidationRule: ToolRule = {
   id: "input-validation",
   check(tool: MCPToolDefinition, ctx: RuleContext): Finding[] {
     const findings: Finding[] = [];
+
+    const limits = ctx.config?.limits ?? DEFAULT_LIMITS;
+    const state: WalkState = {
+      nodesVisited: 0,
+      maxDepth: limits.maxNestingDepth,
+      maxNodes: limits.maxSchemaNodes,
+      depthHit: false,
+      nodesHit: false,
+    };
 
     const properties = tool.inputSchema?.properties;
     if (properties) {
@@ -116,7 +147,7 @@ export const inputValidationRule: ToolRule = {
             complianceRefs: [...COMPLIANCE_REFS],
           });
         }
-      });
+      }, 0, state);
     } else if (matchesSensitiveKeyword(tool.name)) {
       findings.push({
         ruleId: "IV-002",
@@ -137,6 +168,21 @@ export const inputValidationRule: ToolRule = {
           `properties so inputs are validated structurally.`,
         complianceRefs: [...COMPLIANCE_REFS],
       });
+    }
+
+    if (state.depthHit) {
+      ctx.warn?.(
+        `${ctx.file}: tool "${tool.name}": schema nesting depth limit ` +
+          `(${limits.maxNestingDepth}) reached; deeper schema branches were ` +
+          `not analyzed by input-validation`
+      );
+    }
+    if (state.nodesHit) {
+      ctx.warn?.(
+        `${ctx.file}: tool "${tool.name}": schema node limit ` +
+          `(${limits.maxSchemaNodes}) reached; remaining schema was not ` +
+          `analyzed by input-validation`
+      );
     }
 
     return findings;

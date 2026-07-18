@@ -85,6 +85,55 @@ test("nested arrays of arrays are walked to the sensitive field", () => {
   );
 });
 
+function deepSchema(depth: number): Record<string, unknown> {
+  let node: Record<string, unknown> = { type: "string" };
+  for (let i = 0; i < depth; i++) {
+    node = { type: "object", properties: { child: node } };
+  }
+  return node;
+}
+
+test("excessive nesting stops walking with a warning, not a stack overflow", () => {
+  const warnings: string[] = [];
+  const findings = inputValidationRule.check(
+    {
+      name: "deep",
+      inputSchema: deepSchema(200),
+    } as unknown as MCPToolDefinition,
+    {
+      file: "deep.json",
+      config: {
+        limits: { maxFileSize: 1, maxNestingDepth: 5, maxSchemaNodes: 5000 },
+      },
+      warn: (m) => warnings.push(m),
+    }
+  );
+  assert.ok(Array.isArray(findings));
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0]!.includes("nesting depth limit (5)"));
+});
+
+test("excessive node count stops walking with a warning", () => {
+  const properties: Record<string, unknown> = {};
+  for (let i = 0; i < 50; i++) properties[`p${i}`] = { type: "string" };
+  const warnings: string[] = [];
+  inputValidationRule.check(
+    {
+      name: "wide",
+      inputSchema: { type: "object", properties },
+    } as unknown as MCPToolDefinition,
+    {
+      file: "wide.json",
+      config: {
+        limits: { maxFileSize: 1, maxNestingDepth: 50, maxSchemaNodes: 10 },
+      },
+      warn: (m) => warnings.push(m),
+    }
+  );
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0]!.includes("node limit (10)"));
+});
+
 test("null and scalar schema nodes do not throw", () => {
   const findings = check({
     name: "weird",

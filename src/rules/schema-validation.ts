@@ -5,6 +5,7 @@
  */
 import type { Finding, JSONSchemaProperty, MCPToolDefinition } from "../core/types.js";
 import type { RuleContext, ToolRule } from "./index.js";
+import { DEFAULT_LIMITS } from "../core/config.js";
 
 const COMPLIANCE_REFS = ["MCP-TOP10:A1-InjectionSurface"];
 
@@ -65,6 +66,11 @@ export const schemaValidationRule: ToolRule = {
     const root = tool.inputSchema;
     if (!isSchemaNode(root)) return findings;
 
+    const limits = ctx.config?.limits ?? DEFAULT_LIMITS;
+    let nodesVisited = 0;
+    let depthHit = false;
+    let nodesHit = false;
+
     const push = (
       ruleId: string,
       severity: Finding["severity"],
@@ -90,6 +96,15 @@ export const schemaValidationRule: ToolRule = {
       path: string,
       ancestors: JSONSchemaProperty[]
     ): void => {
+      if (ancestors.length > limits.maxNestingDepth) {
+        depthHit = true;
+        return;
+      }
+      if (nodesVisited >= limits.maxSchemaNodes) {
+        nodesHit = true;
+        return;
+      }
+      nodesVisited += 1;
       const rawType: unknown = node.type;
       const invalid = invalidTypeValues(rawType);
       if (invalid.length > 0) {
@@ -203,6 +218,22 @@ export const schemaValidationRule: ToolRule = {
     };
 
     visit(root, `tools["${tool.name}"].inputSchema`, []);
+
+    if (depthHit) {
+      ctx.warn?.(
+        `${ctx.file}: tool "${tool.name}": schema nesting depth limit ` +
+          `(${limits.maxNestingDepth}) reached; deeper schema branches were ` +
+          `not analyzed by schema-validation`
+      );
+    }
+    if (nodesHit) {
+      ctx.warn?.(
+        `${ctx.file}: tool "${tool.name}": schema node limit ` +
+          `(${limits.maxSchemaNodes}) reached; remaining schema was not ` +
+          `analyzed by schema-validation`
+      );
+    }
+
     return findings;
   },
 };

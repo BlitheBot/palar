@@ -88,6 +88,20 @@ test("a file matching both tool and server globs is audited as both, with a warn
   });
 });
 
+test("oversized files are skipped via stat with a warning, never read", async () => {
+  await withTempDir(async (dir) => {
+    const big = JSON.stringify({ name: "big_tool", description: "x".repeat(500) });
+    await writeToolFile(dir, "big.json", big);
+    const result = await discover([dir], { maxFileSize: 100 });
+    assert.equal(result.tools.length, 0);
+    const warning = result.warnings.find((w) => w.includes("exceeds"));
+    assert.ok(warning, `warnings were: ${JSON.stringify(result.warnings)}`);
+    assert.ok(warning.includes("100-byte limit"));
+    const ok = await discover([dir], { maxFileSize: 10_000 });
+    assert.equal(ok.tools.length, 1);
+  });
+});
+
 test("entries without a string name are skipped with a warning", async () => {
   await withTempDir(async (dir) => {
     await writeToolFile(dir, "unnamed.json", JSON.stringify({ description: "x" }));

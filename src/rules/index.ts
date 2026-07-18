@@ -12,8 +12,14 @@ import { textSanitizerRule } from "./text-sanitizer.js";
 import { networkBoundsRule } from "./network-bounds.js";
 import { schemaValidationRule } from "./schema-validation.js";
 
+import type { ResolvedConfig } from "../core/config.js";
+
 export interface RuleContext {
   file: string;
+  /** Resolved configuration; rules fall back to built-in defaults when absent. */
+  config?: ResolvedConfig;
+  /** Collector for non-finding warnings (e.g. hardening-limit hits). */
+  warn?: (message: string) => void;
 }
 
 export interface ToolRule {

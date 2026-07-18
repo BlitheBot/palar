@@ -2,9 +2,15 @@
  * Discovery: locates local MCP tool and server definition JSON files on disk.
  * Read-only — filesystem access only, never the network.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import fg from "fast-glob";
 import type { MCPToolDefinition, MCPServerConfig } from "../core/types.js";
+import { DEFAULT_LIMITS } from "../core/config.js";
+
+export interface DiscoverOptions {
+  /** Max file size in bytes; larger matched files are skipped with a warning. */
+  maxFileSize?: number;
+}
 
 export interface DiscoveredFiles {
   tools: { file: string; definition: MCPToolDefinition }[];
@@ -56,8 +62,25 @@ async function findFiles(patterns: string[], roots: string[]): Promise<string[]>
  */
 async function parseEntries(
   file: string,
-  warnings: string[]
+  warnings: string[],
+  maxFileSize: number
 ): Promise<Record<string, unknown>[] | null> {
+  // Check size via stat before reading so oversized files are never
+  // loaded into memory at all.
+  try {
+    const info = await stat(file);
+    if (info.size > maxFileSize) {
+      warnings.push(
+        `${file}: skipped — file size ${info.size} bytes exceeds the ` +
+          `${maxFileSize}-byte limit (override with --max-file-size)`
+      );
+      return null;
+    }
+  } catch (err) {
+    warnings.push(`${file}: unreadable (${(err as Error).message})`);
+    return null;
+  }
+
   let raw: string;
   try {
     raw = await readFile(file, "utf8");
@@ -87,7 +110,11 @@ async function parseEntries(
   return objects;
 }
 
-export async function discover(paths: string[]): Promise<DiscoveredFiles> {
+export async function discover(
+  paths: string[],
+  options: DiscoverOptions = {}
+): Promise<DiscoveredFiles> {
+  const maxFileSize = options.maxFileSize ?? DEFAULT_LIMITS.maxFileSize;
   const roots = paths.length > 0 ? paths : [process.cwd()];
   const result: DiscoveredFiles = { tools: [], servers: [], warnings: [] };
 
@@ -107,7 +134,7 @@ export async function discover(paths: string[]): Promise<DiscoveredFiles> {
   }
 
   for (const file of toolFiles) {
-    const entries = await parseEntries(file, result.warnings);
+    const entries = await parseEntries(file, result.warnings, maxFileSize);
     if (!entries) continue;
     for (const entry of entries) {
       if (typeof entry.name !== "string") {
@@ -135,7 +162,7 @@ export async function discover(paths: string[]): Promise<DiscoveredFiles> {
   }
 
   for (const file of serverFiles) {
-    const entries = await parseEntries(file, result.warnings);
+    const entries = await parseEntries(file, result.warnings, maxFileSize);
     if (!entries) continue;
     for (const entry of entries) {
       if (typeof entry.name !== "string") {
