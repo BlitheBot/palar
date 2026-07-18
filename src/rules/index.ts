@@ -10,6 +10,7 @@ import type {
 import { inputValidationRule } from "./input-validation.js";
 import { textSanitizerRule } from "./text-sanitizer.js";
 import { networkBoundsRule } from "./network-bounds.js";
+import { schemaValidationRule } from "./schema-validation.js";
 
 export interface RuleContext {
   file: string;
@@ -25,5 +26,9 @@ export interface ServerRule {
   check(server: MCPServerConfig, ctx: RuleContext): Finding[];
 }
 
-export const toolRules: ToolRule[] = [inputValidationRule, textSanitizerRule];
+export const toolRules: ToolRule[] = [
+  inputValidationRule,
+  textSanitizerRule,
+  schemaValidationRule,
+];
 export const serverRules: ServerRule[] = [networkBoundsRule];
