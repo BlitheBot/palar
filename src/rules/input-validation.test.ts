@@ -85,6 +85,77 @@ test("nested arrays of arrays are walked to the sensitive field", () => {
   );
 });
 
+test("a trivial catch-all pattern on a sensitive field fires IV-003", () => {
+  const findings = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: { command: { type: "string", pattern: "^.*$" } },
+    },
+  });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["IV-003"]);
+  assert.equal(findings[0]!.severity, "medium");
+});
+
+test("a genuinely constraining pattern fires neither IV-001 nor IV-003", () => {
+  const findings = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", pattern: "^/safe/[A-Za-z0-9._-]{1,64}$" },
+      },
+    },
+  });
+  assert.deepEqual(findings, []);
+});
+
+test("a trivial pattern on a non-sensitive field does not fire IV-003", () => {
+  const findings = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: { notes: { type: "string", pattern: ".*" } },
+    },
+  });
+  assert.deepEqual(findings, []);
+});
+
+test("catastrophic-backtracking shapes fire IV-004", () => {
+  for (const pattern of ["^(a+)+$", "^([a-z]+)*$", "^(\\d+){2,}$", "foo.*.*bar", "^(x|x)+$"]) {
+    const findings = check({
+      name: "t",
+      inputSchema: {
+        type: "object",
+        properties: { notes: { type: "string", pattern } },
+      },
+    });
+    assert.deepEqual(
+      findings.map((f) => f.ruleId),
+      ["IV-004"],
+      `expected IV-004 for pattern ${pattern}`
+    );
+  }
+});
+
+test("legitimate repetition does not false-positive IV-004", () => {
+  for (const pattern of [
+    "^[a-z]+(-[a-z]+)*$",
+    "^[A-Za-z ,.-]{1,80}$",
+    "^\\d{1,3}(\\.\\d{1,3}){3}$",
+    "^https://[a-z0-9.-]+/[a-z0-9/_-]*$",
+  ]) {
+    const findings = check({
+      name: "t",
+      inputSchema: {
+        type: "object",
+        properties: { notes: { type: "string", pattern } },
+      },
+    });
+    assert.deepEqual(findings, [], `unexpected finding for pattern ${pattern}`);
+  }
+});
+
 function deepSchema(depth: number): Record<string, unknown> {
   let node: Record<string, unknown> = { type: "string" };
   for (let i = 0; i < depth; i++) {
