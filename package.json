@@ -11,8 +11,17 @@
     "dist",
     "!dist/**/*.test.*"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BlitheBot/MCP.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BlitheBot/MCP/issues"
+  },
+  "homepage": "https://github.com/BlitheBot/MCP#readme",
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build && npm test",
     "dev": "tsx src/cli/index.ts",
     "test": "tsc -p tsconfig.json && node --test \"dist/**/*.test.js\"",
     "typecheck": "tsc --noEmit"
