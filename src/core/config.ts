@@ -48,6 +48,12 @@ export interface ResolvedConfig {
   network: NetworkPatterns;
   /** Per-ruleId severity overrides applied to every emitted finding. */
   severityOverrides: Record<string, Severity>;
+  description: {
+    /** Descriptions longer than this are flagged as a context-stuffing vector. */
+    maxLength: number;
+    /** Lowercased phrases heuristically associated with prompt injection. */
+    injectionKeywords: string[];
+  };
 }
 
 export const DEFAULT_CONFIG: ResolvedConfig = {
@@ -88,6 +94,24 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
     ],
   },
   severityOverrides: {},
+  description: {
+    maxLength: 1000,
+    injectionKeywords: [
+      "ignore previous instructions",
+      "ignore all previous instructions",
+      "ignore prior instructions",
+      "disregard the above",
+      "disregard previous",
+      "system prompt",
+      "developer instructions",
+      "developer message",
+      "you are now",
+      "new instructions:",
+      "override your instructions",
+      "do not tell the user",
+      "do not reveal",
+    ],
+  },
 };
 
 export const CONFIG_FILE_NAME = ".mcpguardrc.json";
@@ -100,6 +124,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "unicodeCategories",
   "network",
   "severityOverrides",
+  "description",
 ]);
 const CODE_POINT_RANGE = /^[0-9a-fA-F]{1,6}(-[0-9a-fA-F]{1,6})?$/;
 
@@ -239,6 +264,31 @@ export function resolveConfig(raw?: unknown, source = ""): ResolvedConfig {
         "network.privateSubnetPatterns",
         source
       );
+    }
+  }
+
+  if (raw.description !== undefined) {
+    if (!isPlainObject(raw.description)) {
+      fail(source, `"description" must be an object`);
+    }
+    for (const key of Object.keys(raw.description)) {
+      if (key !== "maxLength" && key !== "injectionKeywords") {
+        fail(source, `"description" has unknown key "${key}"`);
+      }
+    }
+    if (raw.description.maxLength !== undefined) {
+      const n = raw.description.maxLength;
+      if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) {
+        fail(source, `"description.maxLength" must be a positive integer`);
+      }
+      config.description.maxLength = n;
+    }
+    if (raw.description.injectionKeywords !== undefined) {
+      config.description.injectionKeywords = requireStringArray(
+        raw.description.injectionKeywords,
+        "description.injectionKeywords",
+        source
+      ).map((k) => k.toLowerCase());
     }
   }
 

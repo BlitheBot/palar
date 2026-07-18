@@ -11,6 +11,7 @@ import { inputValidationRule } from "./input-validation.js";
 import { textSanitizerRule } from "./text-sanitizer.js";
 import { networkBoundsRule } from "./network-bounds.js";
 import { schemaValidationRule } from "./schema-validation.js";
+import { descriptionHygieneRule } from "./description-hygiene.js";
 
 import type { ResolvedConfig } from "../core/config.js";
 
@@ -36,5 +37,6 @@ export const toolRules: ToolRule[] = [
   inputValidationRule,
   textSanitizerRule,
   schemaValidationRule,
+  descriptionHygieneRule,
 ];
 export const serverRules: ServerRule[] = [networkBoundsRule];

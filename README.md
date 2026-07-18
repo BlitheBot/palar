@@ -129,6 +129,10 @@ than silently breaking existing files).
   },
   "severityOverrides": {
     "IV-001": "medium"
+  },
+  "description": {
+    "maxLength": 1000,
+    "injectionKeywords": ["ignore previous instructions", "system prompt"]
   }
 }
 ```
@@ -145,6 +149,8 @@ than silently breaking existing files).
   and private-subnet host matching in network-bounds.
 - `severityOverrides` — per-ruleId severity replacement (e.g. downgrade
   `IV-001` to `medium`); affects both the report and the score.
+- `description` — the description-hygiene rule's length threshold and
+  injection-phrase heuristic list (replaces the default list).
 
 ## File discovery
 
