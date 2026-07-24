@@ -5,18 +5,18 @@
  * before this module — previously mcpguard only read the JSON files that
  * describe a server, never ran one.
  *
- * NOT sandboxing. See the module docstring in liveScan.ts for what
- * protections exist (clean-env construction, hard timeout, unconditional
- * kill) and what does not (no container, no gVisor, no filesystem or
- * network isolation — a malicious target can read this host's filesystem
- * or make arbitrary outbound network calls while it runs).
+ * stdio targets run inside a Docker container (sandbox.ts), not directly
+ * on this host — Docker is mandatory here, with no unsandboxed fallback.
+ * What that does and doesn't cover is documented in sandbox.ts and
+ * README.md's "Live scanning" section. SSE targets have no local process
+ * to sandbox and are unaffected.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { MCPServerConfig } from "../core/types.js";
-import { buildCleanEnv } from "./env.js";
+import type { TargetSandbox } from "./sandbox.js";
 
 export interface LiveConnection {
   client: Client;
@@ -28,10 +28,12 @@ export interface LiveConnection {
 }
 
 export interface ConnectOptions {
-  /** Working directory for a spawned stdio child (default: process.cwd()). */
-  cwd?: string;
   /** Milliseconds to wait for the initial connect/handshake. */
   connectTimeoutMs?: number;
+  /** Required for stdio targets: the sandbox the target's container runs in. */
+  sandbox?: TargetSandbox;
+  /** Required for stdio targets: read-only mount root for the container (the target's own directory). */
+  targetDir?: string;
 }
 
 export class ConnectorError extends Error {}
@@ -89,20 +91,35 @@ export async function connectLive(
       `server "${server.name}" declares no "command" — nothing to spawn over stdio`
     );
   }
+  if (!opts.sandbox || !opts.targetDir) {
+    // Should be unreachable: liveScan.ts always builds a sandbox before
+    // calling connectLive() for a stdio target. Guarded explicitly rather
+    // than spawning server.command directly, since that fallback is
+    // exactly the unsandboxed path this module no longer has.
+    throw new ConnectorError(
+      `server "${server.name}" is a stdio target but no sandbox was provided — refusing to run it unsandboxed`
+    );
+  }
 
+  const dockerArgs = opts.sandbox.dockerRunArgs(server, opts.targetDir);
   const transport = new StdioClientTransport({
-    command: server.command,
-    args: server.args ?? [],
-    // Deliberately NOT `...process.env` — see env.ts for exactly what this
-    // does and does not guarantee about the child's final environment.
-    env: buildCleanEnv(server.env),
-    cwd: opts.cwd,
+    command: "docker",
+    args: dockerArgs,
+    // No `env` override here: this spawns the `docker` CLI client on the
+    // host, not the target itself. The target's declared env (server.env)
+    // is delivered into the container via `-e` flags baked into
+    // dockerArgs (see sandbox.ts, which reuses buildCleanEnv for that) —
+    // passing it to the docker CLI's own process environment would do
+    // nothing useful and risks colliding with vars the CLI itself reads
+    // (DOCKER_HOST, HOME). The SDK's own default allowlist environment
+    // (see env.ts's docstring) is enough for the CLI to run.
     stderr: "pipe",
   });
 
   await withTimeout(client.connect(transport), connectTimeoutMs, `connect to "${server.name}" (stdio)`);
 
   const pid = transport.pid;
+  const sandbox = opts.sandbox;
   let closed = false;
   return {
     client,
@@ -117,7 +134,10 @@ export async function connectLive(
         // Graceful close didn't finish in time — fall through to the
         // unconditional kill below regardless of why.
       }
+      // Kills the local `docker` CLI client, not the container itself —
+      // sandbox.teardown() (docker rm -f) is the real backstop.
       if (pid !== null) forceKill(pid);
+      await sandbox.teardown();
     },
   };
 }

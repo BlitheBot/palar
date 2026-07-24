@@ -40,19 +40,31 @@ and audits their declared schemas, descriptions, and network config without
 ever running anything. The JSON files here are what `scan` reads.
 
 `mcpguard live` (see the top-level README's "Live scanning" section) is
-different: it spawns `src/index.ts` for real via the `command`/`args`
-declared in `mcp.server.json`, connects over stdio, and sends it crafted
-input to confirm the flaws above via an out-of-band callback — this is the
-canonical fixture used to prove that path end-to-end. `src/index.ts` is a
-real, independently runnable server kept in sync with the JSON definitions
-so both modes have a genuine target, not just a theoretical schema on
-paper.
+different: it runs `src/index.ts` for real, inside a Docker container, via
+the `command`/`args` declared in `mcp.server.json`, connects over stdio, and
+sends it crafted input to confirm the flaws above via an out-of-band
+callback — this is the canonical fixture used to prove that path end-to-end.
+`src/index.ts` is a real, independently runnable server kept in sync with
+the JSON definitions so both modes have a genuine target, not just a
+theoretical schema on paper.
 
 ## Running the server directly
 
+This fixture has its own `package.json` (kept independent of mcpguard's own
+dependencies) since `mcpguard live` mounts this directory — and nothing
+above it — read-only into the target's container; install its own
+dependencies first:
+
 ```bash
-node --import tsx fixtures/vuln-server/src/index.ts
+cd fixtures/vuln-server
+npm install
+node --import tsx src/index.ts
 ```
 
 It speaks MCP over stdio — pair it with an MCP client (or the SDK's
 `StdioClientTransport`) to call its tools directly.
+
+> If you're only ever running it through `mcpguard live` (below), this step
+> matters even if you don't invoke `node` yourself: `live` still needs
+> `node_modules` to exist here so the container has `@modelcontextprotocol/sdk`
+> and `zod` available at `/target/node_modules`.

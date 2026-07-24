@@ -3,22 +3,27 @@
  * tools, probe the ones that look injectable, and check description
  * poisoning against the live (not just static-file) content.
  *
- * Safety posture for this pass (deliberately not full sandboxing — see
- * connector.ts / env.ts docstrings for exactly what is and isn't covered):
- *   - the target's environment is built explicitly, not inherited from
- *     mcpguard's own process (env.ts)
- *   - the whole scan is bounded by a hard overall timeout
- *   - the target's child process is killed unconditionally in `finally`,
- *     success, failure, or timeout
- * NOT covered: filesystem isolation, network isolation, resource limits.
- * The target runs directly on this host with the ability to read this
- * filesystem and make arbitrary outbound network calls for the duration of
- * the scan. Real isolation (containers or gVisor) is a separate, larger
- * piece of work and a hard requirement before running this against any
- * third-party or client server.
+ * Safety posture for stdio targets (see sandbox.ts for exactly what is and
+ * isn't covered):
+ *   - the target's declared command runs inside an ephemeral, network-
+ *     restricted Docker container, mounted read-only, with dropped
+ *     capabilities and resource limits — not directly on this host
+ *   - the container's only permitted egress is to this scan's own oracle
+ *     callback listener; everything else is rejected at the firewall
+ *   - the whole scan is bounded by a hard overall timeout, and the
+ *     container/network/firewall rule are torn down unconditionally in
+ *     `finally`, success, failure, or timeout
+ * NOT covered: this is container isolation (Docker + iptables), not a VM
+ * or gVisor — a kernel-level container escape isn't mitigated. See
+ * README.md's "Live scanning" section for the full list of what's still
+ * out of scope (concurrent-scan firewall races, oracle rate-limiting,
+ * etc.). SSE targets have no local process to sandbox and are unaffected —
+ * this module's safety posture for them is unchanged: a clean env is moot
+ * (nothing is spawned) and only the overall timeout applies.
  */
 import { CallbackOracle } from "./oracle.js";
 import { connectLive, type LiveConnection } from "./connector.js";
+import { TargetSandbox } from "./sandbox.js";
 import {
   classifyExecutionAdjacentFields,
   detectPoisonedDescription,
@@ -38,12 +43,19 @@ import type {
 } from "./types.js";
 
 export interface LiveScanOptions {
-  cwd?: string;
+  /** Read-only container mount root for stdio targets — the target's own directory, not mcpguard's. */
+  targetDir?: string;
   connectTimeoutMs?: number;
   /** How long to wait for an oracle callback after each probe call, default 4000ms. */
   callbackTimeoutMs?: number;
   /** Hard ceiling for the whole scan (connect + listTools + all probes), default 30000ms. */
   overallTimeoutMs?: number;
+  /**
+   * Oracle bind host — only meaningful for SSE targets. For stdio targets
+   * the oracle binds to the scan's own sandbox network's gateway address
+   * instead, since that's the only address a container on that network can
+   * actually reach (see sandbox.ts); this option is ignored in that case.
+   */
   oracleHost?: string;
 }
 
@@ -147,27 +159,30 @@ export async function runLiveScan(
   const warnings: string[] = [];
   const errors: string[] = [];
 
-  const oracle = new CallbackOracle(opts.oracleHost ?? "127.0.0.1");
-  await oracle.start();
+  const isStdio = server.transport !== "sse";
 
-  // A holder object, not a bare `let`: the connect step happens inside an
-  // async closure past an `await`, so TypeScript's control-flow narrowing
-  // can't see that the assignment below has happened by the time `finally`
-  // runs — reading a mutable property sidesteps that (real, if unrelated to
-  // the code's actual behavior) narrowing limitation.
-  const holder: { connection: LiveConnection | null } = { connection: null };
+  // A holder object, not bare `let`s: the setup below happens inside an
+  // async closure past several `await`s, so TypeScript's control-flow
+  // narrowing can't see that the assignments have happened by the time
+  // `finally` runs — reading mutable properties sidesteps that (real, if
+  // unrelated to the code's actual behavior) narrowing limitation.
+  const holder: {
+    connection: LiveConnection | null;
+    sandbox: TargetSandbox | null;
+    oracle: CallbackOracle | null;
+  } = { connection: null, sandbox: null, oracle: null };
 
   const result: LiveAuditResult = {
     timestamp: new Date().toISOString(),
     serverName: server.name,
-    transportKind: server.transport === "sse" ? "sse" : "stdio",
+    transportKind: isStdio ? "stdio" : "sse",
     pid: null,
     connectDurationMs: 0,
     liveTools: [],
     toolDrift: [],
     probes: [],
     poisoningChecks: [],
-    oracle: { baseUrl: oracle.baseUrl },
+    oracle: { baseUrl: "" },
     warnings,
     errors,
     durationMs: 0,
@@ -181,10 +196,35 @@ export async function runLiveScan(
   });
 
   const work = (async () => {
+    // Docker is mandatory for stdio: the sandbox (and the container network
+    // it creates) has to exist before the oracle starts, because the
+    // oracle must bind to that network's own gateway address — a listener
+    // on 127.0.0.1 is unreachable from inside the container (see
+    // sandbox.ts / oracle.ts docstrings). SSE has no local process, so no
+    // sandbox is created and the oracle keeps its original loopback/
+    // opts.oracleHost behavior.
+    let sandbox: TargetSandbox | null = null;
+    if (isStdio) {
+      sandbox = await TargetSandbox.create();
+      holder.sandbox = sandbox;
+    }
+
+    const oracle = sandbox
+      ? new CallbackOracle(sandbox.gatewayIp, { advertisedHost: "host.docker.internal" })
+      : new CallbackOracle(opts.oracleHost ?? "127.0.0.1");
+    await oracle.start();
+    holder.oracle = oracle;
+    result.oracle = { baseUrl: oracle.baseUrl };
+
+    if (sandbox) {
+      await sandbox.installFirewall(oracle.port);
+    }
+
     const connectStart = Date.now();
     const connection = await connectLive(server, {
-      cwd: opts.cwd,
+      targetDir: opts.targetDir,
       connectTimeoutMs: opts.connectTimeoutMs,
+      sandbox: sandbox ?? undefined,
     });
     holder.connection = connection;
     result.connectDurationMs = Date.now() - connectStart;
@@ -228,7 +268,17 @@ export async function runLiveScan(
         warnings.push(`failed to cleanly close target: ${(err as Error).message}`);
       }
     }
-    await oracle.stop();
+    if (holder.sandbox) {
+      // Defensive and idempotent: connectLive() may have thrown before a
+      // connection existed (e.g. the container never started), in which
+      // case close() above never ran and never tore the sandbox down.
+      // Also covers holder.connection.close() itself throwing before it
+      // reached its own sandbox.teardown() call.
+      await holder.sandbox.teardown();
+    }
+    if (holder.oracle) {
+      await holder.oracle.stop();
+    }
   }
 
   result.durationMs = Date.now() - start;

@@ -109,7 +109,13 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   );
   lines.push(`- **Connect time:** ${live.connectDurationMs}ms`);
   lines.push(`- **Live tools discovered:** ${live.liveTools.length}`);
-  lines.push(`- **Oracle listener:** ${live.oracle.baseUrl} (loopback-only — see limitations below)`);
+  lines.push(
+    `- **Oracle listener:** ${live.oracle.baseUrl} (${
+      live.transportKind === "stdio"
+        ? "bound to this scan's sandbox network gateway, reachable only from its container"
+        : "loopback-only"
+    } — see limitations below)`
+  );
   lines.push(`- **Total duration:** ${live.durationMs}ms`);
   lines.push("");
 
@@ -218,10 +224,20 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
       "genuine external infrastructure (e.g. a real cloud metadata endpoint reachable only " +
       "from inside someone else's network)."
   );
-  lines.push(
-    "- The target ran with NO sandboxing: no container, no gVisor, no filesystem or network " +
-      "isolation. It ran directly on this host for the duration of the scan."
-  );
+  if (live.transportKind === "stdio") {
+    lines.push(
+      "- The target ran inside an ephemeral, network-restricted Docker container (read-only " +
+        "mount, dropped capabilities, resource limits, egress restricted to this scan's own " +
+        "oracle). That is container isolation, not a VM or gVisor — a kernel-level container " +
+        "escape is not mitigated. See README.md's \"Live scanning\" section for the full list " +
+        "of what is and isn't covered."
+    );
+  } else {
+    lines.push(
+      "- SSE targets connect to an already-running remote server — there is no local process " +
+        "for mcpguard to sandbox here."
+    );
+  }
   lines.push("");
 
   if (live.warnings.length > 0) {

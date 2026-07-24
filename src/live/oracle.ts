@@ -16,13 +16,18 @@
  * else's VPC). That requires real external collaborator infrastructure,
  * which is a separate, larger build.
  *
- * It binds to 127.0.0.1 because, until the target runs in a real sandbox
- * (not yet built — see connector.ts), the target is a local child process
- * on this same machine and loopback is sufficient to reach it. Once the
- * target runs inside a container/VM with its own network namespace, this
- * will need to bind an interface that namespace can actually route to
- * (e.g. a bridge address) — noted here as a concrete follow-up, not solved
- * by this pass.
+ * It binds to 127.0.0.1 by default, sufficient when there's no container
+ * network namespace in the way (SSE targets; anything not routed through
+ * sandbox.ts). For containerized stdio targets, liveScan.ts constructs
+ * this with the scan's sandbox network's own gateway address instead —
+ * verified empirically that a container cannot reach a host listener
+ * bound to 127.0.0.1 at all (a loopback-bound socket only accepts
+ * loopback-origin connections), so binding to the bridge gateway address
+ * is required, not just an option. `advertisedHost` lets the *embedded*
+ * callback URL differ from the bind host: the payload a container-side
+ * process sees needs `host.docker.internal` (mapped by sandbox.ts to that
+ * same gateway address), since `127.0.0.1` inside the container means the
+ * container itself, not this listener.
  */
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { randomBytes } from "node:crypto";
@@ -35,15 +40,22 @@ export interface CallbackEvent {
   path: string;
 }
 
+export interface CallbackOracleOptions {
+  /** Host to embed in callbackUrl()'s payload URLs. Defaults to the bind host. */
+  advertisedHost?: string;
+}
+
 export class CallbackOracle {
   private server: Server | null = null;
   private host: string;
-  private port = 0;
+  private advertisedHost: string;
+  private boundPort = 0;
   private events = new Map<string, CallbackEvent[]>();
   private waiters = new Map<string, ((event: CallbackEvent) => void)[]>();
 
-  constructor(host = "127.0.0.1") {
+  constructor(host = "127.0.0.1", opts: CallbackOracleOptions = {}) {
     this.host = host;
+    this.advertisedHost = opts.advertisedHost ?? host;
   }
 
   async start(): Promise<void> {
@@ -57,7 +69,7 @@ export class CallbackOracle {
     if (address === null || typeof address === "string") {
       throw new Error("CallbackOracle: expected an AddressInfo from listen()");
     }
-    this.port = address.port;
+    this.boundPort = address.port;
   }
 
   async stop(): Promise<void> {
@@ -66,10 +78,15 @@ export class CallbackOracle {
     this.server = null;
   }
 
+  /** The actual bound port. Throws if start() hasn't completed yet. */
+  get port(): number {
+    if (this.boundPort === 0) throw new Error("CallbackOracle not started");
+    return this.boundPort;
+  }
+
   get baseUrl(): string {
-    if (this.port === 0) throw new Error("CallbackOracle not started");
-    // A literal IPv6 host would need bracketing; loopback IPv4 is the
-    // supported case for this pass (see class docstring).
+    // A literal IPv6 host would need bracketing; loopback/bridge IPv4 is
+    // the supported case for this pass (see class docstring).
     return `http://${this.host}:${this.port}`;
   }
 
@@ -79,9 +96,13 @@ export class CallbackOracle {
     return `${safeLabel}-${randomBytes(8).toString("hex")}`;
   }
 
-  /** The callback URL to embed in a crafted payload for this nonce. */
+  /**
+   * The callback URL to embed in a crafted payload for this nonce. Uses
+   * advertisedHost, not the bind host — see class docstring for why those
+   * two differ for containerized targets.
+   */
   callbackUrl(nonce: string): string {
-    return `${this.baseUrl}/cb/${nonce}`;
+    return `http://${this.advertisedHost}:${this.port}/cb/${nonce}`;
   }
 
   private handle(req: IncomingMessage, res: import("node:http").ServerResponse): void {

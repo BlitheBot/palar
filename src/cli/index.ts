@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import chalk from "chalk";
 import type { Severity } from "../core/types.js";
@@ -301,14 +302,14 @@ addLimitOptions(
     .command("live")
     .description(
       "Spawn/connect to discovered MCP servers for real and probe them with an out-of-band " +
-        "callback oracle (EXPERIMENTAL — no sandboxing yet; see --help)"
+        "callback oracle (EXPERIMENTAL — stdio targets run in a Docker container; see --help)"
     )
     .argument("[paths...]", "files or directories to scan (default: cwd)")
     .option("--dir <dir...>", "additional directories to scan")
     .option(
       "--execute",
-      "required: confirms you understand this spawns/connects to the target for real, " +
-        "with no sandboxing"
+      "required: confirms you understand this spawns/connects to the target for real " +
+        "(stdio targets sandboxed in a Docker container, not a VM — see --help)"
     )
     .option("--timeout-ms <n>", "hard ceiling for the whole live scan per server", positiveInt, 30_000)
     .option(
@@ -317,7 +318,11 @@ addLimitOptions(
       positiveInt,
       4_000
     )
-    .option("--oracle-host <host>", "host the callback listener binds to", "127.0.0.1")
+    .option(
+      "--oracle-host <host>",
+      "host the callback listener binds to for SSE targets (stdio targets always bind to their sandbox network's gateway address)",
+      "127.0.0.1"
+    )
     .option("--json", "output raw results as JSON")
     .option("--out <file>", "write the report to a file instead of stdout")
 ).action(
@@ -341,10 +346,14 @@ addLimitOptions(
       logStatus(
         chalk.yellow(
           "mcpguard live: refusing to run without --execute.\n\n" +
-            "This command spawns each discovered server's declared command as a real child " +
-            "process (or connects to it over SSE) and sends it real crafted input. There is " +
-            "NO sandboxing yet (no container, no gVisor, no filesystem/network isolation) — " +
-            "the target runs directly on this machine for the duration of the scan.\n\n" +
+            "This command spawns each discovered server's declared command as a real process " +
+            "(or connects to it over SSE) and sends it real crafted input. stdio targets run " +
+            "inside an ephemeral, network-restricted Docker container (mounted read-only, " +
+            "capabilities dropped, resource-limited) — Docker is required, with no unsandboxed " +
+            "fallback. That is container isolation, not a VM or gVisor: a kernel-level " +
+            "container escape is not mitigated, and SSE targets (no local process to sandbox) " +
+            "are unaffected. See README.md's \"Live scanning\" section for the full list of " +
+            "what is and isn't covered.\n\n" +
             "Re-run with --execute once you understand and accept that."
         )
       );
@@ -373,10 +382,10 @@ addLimitOptions(
     const liveResults: Awaited<ReturnType<typeof runLiveScan>>[] = [];
     const reports: string[] = [];
 
-    for (const { config: server } of discovered.servers) {
+    for (const { file, config: server } of discovered.servers) {
       logStatus(chalk.dim(`connecting to "${server.name}" (${server.transport ?? "stdio"})...`));
       const live = await runLiveScan(server, discovered.tools, {
-        cwd: process.cwd(),
+        targetDir: dirname(file),
         overallTimeoutMs: opts.timeoutMs,
         callbackTimeoutMs: opts.callbackTimeoutMs,
         oracleHost: opts.oracleHost,

@@ -12,9 +12,11 @@ definition files, with two distinct modes:
 - **`live`** (new, experimental — see below) — actually spawns/connects to
   the target server and sends it crafted input over a real MCP connection,
   confirming exploitability via an out-of-band callback rather than
-  inferring it from schema shape. This mode is **not** read-only and **not**
-  sandboxed — read the "Live scanning" section before using it against
-  anything you don't fully trust.
+  inferring it from schema shape. This mode is **not** read-only: stdio
+  targets run inside an ephemeral, network-restricted Docker container
+  (Docker is required, with no unsandboxed fallback) — read the "Live
+  scanning" section for exactly what that does and doesn't cover before
+  using it against anything you don't fully trust.
 
 ## Audit pillars
 
@@ -140,12 +142,59 @@ mcpguard live fixtures/vuln-server --execute
 `--execute` is required — `live` refuses to run without it, since (unlike
 `scan`) it has real side effects. Other flags: `--timeout-ms` (hard ceiling
 for the whole scan per server, default 30000), `--callback-timeout-ms`,
-`--oracle-host` (default `127.0.0.1`), `--json`, `--out`. Exits `1` if any
-finding was CONFIRMED.
+`--oracle-host` (default `127.0.0.1`, SSE targets only — see below),
+`--json`, `--out`. Exits `1` if any finding was CONFIRMED.
 
-### What this proves, and what it doesn't
+### Sandboxing: stdio targets run in a Docker container
 
-- The oracle is a **local loopback HTTP listener**, not external DNS/HTTP
+For stdio targets (the only case that spawns anything), `live` runs the
+target's declared `command`/`args` inside an ephemeral Docker container
+instead of directly on this host. **Docker is required — there is no
+unsandboxed fallback**; if `docker version` fails, `live` fails closed with
+a clear error rather than falling back to running the target on the host.
+Per scan:
+
+- a fresh bridge network is created and torn down afterward;
+- the container is `--read-only` with a `noexec` tmpfs at `/tmp`, every
+  Linux capability dropped (`--cap-drop=ALL`), `no-new-privileges`, and
+  `--pids-limit`/`--memory`/`--cpus` resource limits;
+- the target's own directory is bind-mounted read-only at `/target` —
+  **not** mcpguard's own source, and nothing above the target's directory;
+  the target's own `node_modules` must exist there already (mcpguard
+  doesn't install dependencies on your behalf — see
+  `fixtures/vuln-server/README.md` for what that means for the fixture);
+  mcpguard builds the container's declared env explicitly (`src/live/env.ts`
+  / `src/live/sandbox.ts`) from exactly `mcp.server.json`'s own `"env"`
+  field — no ambient host environment reaches the container;
+- egress is restricted to exactly this scan's own oracle callback
+  listener: a per-scan `iptables` chain is inserted into Docker's
+  `DOCKER-USER` hook (`ACCEPT` to the oracle, `REJECT` everything else) and
+  removed on teardown, alongside the container and network. The oracle
+  itself binds to that scan's bridge network gateway address (not
+  `127.0.0.1` — a loopback-bound listener isn't reachable from inside a
+  container), so `--oracle-host` only affects the SSE case.
+
+**What this is, plainly stated:** Docker + `iptables` container isolation,
+not a VM and not gVisor — a kernel-level container escape is not mitigated.
+Named gaps, not silently deferred:
+
+- the `DOCKER-USER` chain is shared, host-global state; concurrent
+  `mcpguard live` invocations against the same Docker daemon aren't
+  supported yet (the per-scan chain limits this to one shared jump-rule
+  insert/delete per scan, but that's still a race, not eliminated);
+- this has only been verified against a native Linux Docker Engine +
+  iptables/netfilter backend — Docker Desktop and nftables-only hosts are
+  untested;
+- the oracle callback listener has no rate-limiting or body-size cap;
+- resource limits are best-effort hardening against fork-bombing/resource
+  exhaustion, not a hard guarantee on par with a VM boundary;
+- **SSE targets are unaffected** — there's no local process to sandbox for
+  an already-running remote server; the callback-oracle scope limitation
+  below still applies to both.
+
+### What the oracle proves, and what it doesn't
+
+- The oracle is a **local HTTP listener**, not external DNS/HTTP
   collaborator infrastructure (interactsh-style). It proves command
   injection or SSRF that can reach the scanning host's own network. It does
   **not** prove reach to genuine external infrastructure — e.g. a real
@@ -157,16 +206,6 @@ finding was CONFIRMED.
   What `live` adds for this class is cross-checking that the poisoned text
   is genuinely served by the running process (`listTools()`), not just
   present in a JSON file that might be stale.
-- **There is no sandboxing.** The target runs directly on this machine for
-  the duration of the scan — no container, no gVisor, no filesystem or
-  network isolation. mcpguard builds the child's environment explicitly
-  (never spreading its own `process.env` into the target — see
-  `src/live/env.ts`), enforces a hard overall timeout, and unconditionally
-  kills the child process afterward — but none of that is a security
-  boundary. **Do not run `mcpguard live` against a third party's server or
-  any client's infrastructure until real isolation (containers or gVisor)
-  exists.** That is the next major piece of work, not an indefinitely
-  deferred one.
 
 ## GitHub Action
 
@@ -268,11 +307,17 @@ src/
   rules/      Rule interfaces and registries; one file per rule
               (input-validation, text-sanitizer, network-bounds)
   live/       The `live` command's engine: oracle (local HTTP callback
-              listener), connector (real stdio/SSE MCP client via
-              @modelcontextprotocol/sdk), probes (payload classification
-              and construction, reusing rules/input-validation.ts's
-              keyword matching), liveScan (orchestrator), report
-              (CONFIRMED / ATTEMPTED-UNCONFIRMED / STATIC-ONLY rendering)
+              listener), sandbox (per-scan Docker container + network +
+              iptables egress control for stdio targets), connector (real
+              stdio/SSE MCP client via @modelcontextprotocol/sdk), probes
+              (payload classification and construction, reusing
+              rules/input-validation.ts's keyword matching), liveScan
+              (orchestrator), report (CONFIRMED / ATTEMPTED-UNCONFIRMED /
+              STATIC-ONLY rendering)
+docker/       Dockerfiles for the `live` sandbox: target-runtime (minimal
+              node:20-slim the target's own command runs in) and net-helper
+              (alpine + iptables, used only to install/remove the per-scan
+              DOCKER-USER firewall rule)
 ```
 
 Rules implement a small `check(definition, context) → Finding[]` interface
