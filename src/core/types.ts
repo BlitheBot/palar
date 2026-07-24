@@ -41,6 +41,8 @@ export interface MCPServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Endpoint URL for non-stdio transports ("sse", "streamable-http"). */
+  url?: string;
   network?: MCPServerNetworkConfig;
 }
 
@@ -50,7 +52,8 @@ export type Severity = "info" | "low" | "medium" | "high" | "critical";
 export type Pillar =
   | "schema-integrity"
   | "text-sanitization"
-  | "network-boundaries";
+  | "network-boundaries"
+  | "credential-exposure";
 
 /** Where in a scanned file a finding was observed. */
 export interface FindingLocation {

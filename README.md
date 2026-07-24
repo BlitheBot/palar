@@ -1,13 +1,20 @@
 # mcpguard
 
-A defensive, **read-only static analyzer** for local MCP (Model Context
-Protocol) tool and server definition files.
+A defensive analyzer for local MCP (Model Context Protocol) tool and server
+definition files, with two distinct modes:
 
-mcpguard reads local JSON files and reports on their structure — nothing
-else. It makes **no network calls**, generates **no payloads**, and never
-executes or imports the content it scans. Findings are reported with
-severities, remediation guidance, and an overall 0–100 score with a letter
-grade.
+- **`scan` / `snapshot` / `drift`** (the original engine) — **read-only
+  static analysis**. These commands read local JSON files and report on
+  their structure only. They make **no network calls**, generate **no
+  payloads**, and never execute or import the content they scan. Findings
+  are reported with severities, remediation guidance, and an overall 0–100
+  score with a letter grade.
+- **`live`** (new, experimental — see below) — actually spawns/connects to
+  the target server and sends it crafted input over a real MCP connection,
+  confirming exploitability via an out-of-band callback rather than
+  inferring it from schema shape. This mode is **not** read-only and **not**
+  sandboxed — read the "Live scanning" section before using it against
+  anything you don't fully trust.
 
 ## Audit pillars
 
@@ -16,6 +23,7 @@ grade.
 | `schema-integrity` | IV-001, IV-002 | Execution-adjacent string inputs (`command`, `path`, `url`, `sql`, …) with no `pattern`/`enum`/`format` constraint; sensitive-named tools with no input schema at all |
 | `text-sanitization` | TS-001…TS-005 | Hidden Unicode in tool names/descriptions: zero-width characters, bidi override controls, tag characters, stray variation selectors, non-printable controls — reported by code point, never echoed |
 | `network-boundaries` | NB-001…NB-004 | Missing egress filtering, filters with no allowlist, and exposed hosts pointing at loopback or private/link-local address space (including the cloud metadata range) |
+| `credential-exposure` | CR-001…CR-006 | Hardcoded credentials anywhere in a definition file's string values: AWS access keys, API key/token/secret literals, OpenAI-style keys, Slack tokens, bearer tokens, and PEM private-key headers — matched secrets are redacted to `first4...last2` in the report |
 
 ## Install & build
 
@@ -100,6 +108,65 @@ re-run `mcpguard snapshot` to upgrade the baseline.
 > **Windows note:** `--json` output pipes cleanly through Git Bash,
 > PowerShell 7+, and cmd, but Windows PowerShell 5.1 re-encodes piped
 > native output and can mangle the bytes (e.g. prepend a BOM).
+
+## Live scanning (`mcpguard live`) — experimental
+
+Unlike `scan`, this command actually runs the target: it spawns a
+discovered server's declared `command`/`args` as a real child process over
+stdio (or connects over SSE if the server config declares
+`"transport": "sse"` and a `"url"`), performs the real MCP handshake, calls
+`listTools()` against the live process, and — for tools with an
+unconstrained execution-adjacent field (the same detection IV-001 uses) —
+sends a real crafted payload through a real `callTool()` call.
+
+**Confirmation is via an out-of-band callback, not response text.**
+mcpguard starts a local HTTP listener for the duration of the scan, embeds
+a unique per-probe nonce in each payload (a callback URL for SSRF-style
+fields, a shell-metacharacter-appended callback for command-injection-style
+fields), and waits up to `--callback-timeout-ms` (default 4000ms) for a
+request bearing that nonce to arrive. A received callback is reported
+**CONFIRMED**; no callback is reported **ATTEMPTED — UNCONFIRMED**, never
+silently treated as "safe" (egress could be blocked, the payload could have
+failed for an unrelated reason, etc.). Findings with no live equivalent yet
+(credential scanning, network-posture config, schema meta-validation,
+description hygiene) are reported **STATIC-ONLY**. These three categories
+are always kept visibly separate in the report — never flattened into one
+list.
+
+```sh
+mcpguard live fixtures/vuln-server --execute
+```
+
+`--execute` is required — `live` refuses to run without it, since (unlike
+`scan`) it has real side effects. Other flags: `--timeout-ms` (hard ceiling
+for the whole scan per server, default 30000), `--callback-timeout-ms`,
+`--oracle-host` (default `127.0.0.1`), `--json`, `--out`. Exits `1` if any
+finding was CONFIRMED.
+
+### What this proves, and what it doesn't
+
+- The oracle is a **local loopback HTTP listener**, not external DNS/HTTP
+  collaborator infrastructure (interactsh-style). It proves command
+  injection or SSRF that can reach the scanning host's own network. It does
+  **not** prove reach to genuine external infrastructure — e.g. a real
+  cloud metadata endpoint that's only reachable from inside a target's own
+  VPC. Building that is separate, larger work.
+- Tool-poisoning / prompt-injection findings (hidden Unicode instructions in
+  a description) have **no oracle-style confirmation** in this mode: the
+  payload targets an LLM's judgment, and mcpguard's live scanner isn't one.
+  What `live` adds for this class is cross-checking that the poisoned text
+  is genuinely served by the running process (`listTools()`), not just
+  present in a JSON file that might be stale.
+- **There is no sandboxing.** The target runs directly on this machine for
+  the duration of the scan — no container, no gVisor, no filesystem or
+  network isolation. mcpguard builds the child's environment explicitly
+  (never spreading its own `process.env` into the target — see
+  `src/live/env.ts`), enforces a hard overall timeout, and unconditionally
+  kills the child process afterward — but none of that is a security
+  boundary. **Do not run `mcpguard live` against a third party's server or
+  any client's infrastructure until real isolation (containers or gVisor)
+  exists.** That is the next major piece of work, not an indefinitely
+  deferred one.
 
 ## GitHub Action
 
@@ -191,7 +258,7 @@ the scan.
 
 ```
 src/
-  cli/        Command-line entry point (commander): scan, snapshot, drift
+  cli/        Command-line entry point (commander): scan, snapshot, drift, live
   core/       Shared types; auditor (runs rules over discovered files);
               compliance (scoring + Markdown report rendering, with
               suspicious code points escaped); snapshot (canonical
@@ -200,6 +267,12 @@ src/
               reads only, with graceful degradation to warnings
   rules/      Rule interfaces and registries; one file per rule
               (input-validation, text-sanitizer, network-bounds)
+  live/       The `live` command's engine: oracle (local HTTP callback
+              listener), connector (real stdio/SSE MCP client via
+              @modelcontextprotocol/sdk), probes (payload classification
+              and construction, reusing rules/input-validation.ts's
+              keyword matching), liveScan (orchestrator), report
+              (CONFIRMED / ATTEMPTED-UNCONFIRMED / STATIC-ONLY rendering)
 ```
 
 Rules implement a small `check(definition, context) → Finding[]` interface

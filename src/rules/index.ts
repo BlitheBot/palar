@@ -12,6 +12,10 @@ import { textSanitizerRule } from "./text-sanitizer.js";
 import { networkBoundsRule } from "./network-bounds.js";
 import { schemaValidationRule } from "./schema-validation.js";
 import { descriptionHygieneRule } from "./description-hygiene.js";
+import {
+  credentialScannerToolRule,
+  credentialScannerServerRule,
+} from "./credential-scanner.js";
 
 import type { ResolvedConfig } from "../core/config.js";
 
@@ -38,5 +42,6 @@ export const toolRules: ToolRule[] = [
   textSanitizerRule,
   schemaValidationRule,
   descriptionHygieneRule,
+  credentialScannerToolRule,
 ];
-export const serverRules: ServerRule[] = [networkBoundsRule];
+export const serverRules: ServerRule[] = [networkBoundsRule, credentialScannerServerRule];

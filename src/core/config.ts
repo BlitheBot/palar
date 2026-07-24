@@ -73,6 +73,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
     "uri",
     "endpoint",
     "host",
+    "hostname",
     "arg",
     "args",
   ],

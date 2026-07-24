@@ -13,8 +13,11 @@ const COMPLIANCE_REFS = ["MCP-TOP10:A1-InjectionSurface"];
  * Split an identifier into lowercase word segments ("filePath" → ["file",
  * "path"], "target_url" → ["target", "url"]) so keyword matching catches
  * compound names without firing on incidental substrings.
+ *
+ * Exported so the live-scan probe classifier (src/live/probes.ts) can reuse
+ * the same execution-adjacent-field detection instead of re-implementing it.
  */
-function nameSegments(name: string): string[] {
+export function nameSegments(name: string): string[] {
   return name
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .split(/[^a-zA-Z0-9]+/)
@@ -22,11 +25,11 @@ function nameSegments(name: string): string[] {
     .map((s) => s.toLowerCase());
 }
 
-function matchesSensitiveKeyword(name: string, keywords: Set<string>): boolean {
+export function matchesSensitiveKeyword(name: string, keywords: Set<string>): boolean {
   return nameSegments(name).some((seg) => keywords.has(seg));
 }
 
-function isConstrained(prop: JSONSchemaProperty): boolean {
+export function isConstrained(prop: JSONSchemaProperty): boolean {
   return (
     prop.pattern !== undefined ||
     prop.enum !== undefined ||

@@ -18,6 +18,8 @@ import {
   loadSnapshot,
   saveSnapshot,
 } from "../core/snapshot.js";
+import { runLiveScan } from "../live/liveScan.js";
+import { renderLiveMarkdownReport } from "../live/report.js";
 
 const program = new Command();
 
@@ -293,6 +295,120 @@ program
       process.exitCode = 1;
     }
   });
+
+addLimitOptions(
+  program
+    .command("live")
+    .description(
+      "Spawn/connect to discovered MCP servers for real and probe them with an out-of-band " +
+        "callback oracle (EXPERIMENTAL — no sandboxing yet; see --help)"
+    )
+    .argument("[paths...]", "files or directories to scan (default: cwd)")
+    .option("--dir <dir...>", "additional directories to scan")
+    .option(
+      "--execute",
+      "required: confirms you understand this spawns/connects to the target for real, " +
+        "with no sandboxing"
+    )
+    .option("--timeout-ms <n>", "hard ceiling for the whole live scan per server", positiveInt, 30_000)
+    .option(
+      "--callback-timeout-ms <n>",
+      "how long to wait for an oracle callback after each probe",
+      positiveInt,
+      4_000
+    )
+    .option("--oracle-host <host>", "host the callback listener binds to", "127.0.0.1")
+    .option("--json", "output raw results as JSON")
+    .option("--out <file>", "write the report to a file instead of stdout")
+).action(
+  async (
+    paths: string[],
+    opts: {
+      dir?: string[];
+      execute?: boolean;
+      timeoutMs: number;
+      callbackTimeoutMs: number;
+      oracleHost: string;
+      json?: boolean;
+      out?: string;
+    } & LimitOpts
+  ) => {
+    // In --json mode stdout carries only the JSON body; status goes to
+    // stderr, matching `scan`'s convention so piping stays clean.
+    const logStatus = opts.json ? console.error : console.log;
+
+    if (!opts.execute) {
+      logStatus(
+        chalk.yellow(
+          "mcpguard live: refusing to run without --execute.\n\n" +
+            "This command spawns each discovered server's declared command as a real child " +
+            "process (or connects to it over SSE) and sends it real crafted input. There is " +
+            "NO sandboxing yet (no container, no gVisor, no filesystem/network isolation) — " +
+            "the target runs directly on this machine for the duration of the scan.\n\n" +
+            "Re-run with --execute once you understand and accept that."
+        )
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const config = await loadCliConfig(opts);
+    const roots = [...paths, ...(opts.dir ?? [])];
+    const discovered = await discover(roots, { maxFileSize: config.limits.maxFileSize });
+    for (const warning of discovered.warnings) {
+      console.error(chalk.dim(`warning: ${warning}`));
+    }
+
+    if (discovered.servers.length === 0) {
+      logStatus(
+        chalk.yellow(
+          `No MCP server definition files found under: ${roots.length > 0 ? roots.join(", ") : process.cwd()}`
+        )
+      );
+      return;
+    }
+
+    const staticResult = runAudit(discovered, config);
+    let anyConfirmed = false;
+    const liveResults: Awaited<ReturnType<typeof runLiveScan>>[] = [];
+    const reports: string[] = [];
+
+    for (const { config: server } of discovered.servers) {
+      logStatus(chalk.dim(`connecting to "${server.name}" (${server.transport ?? "stdio"})...`));
+      const live = await runLiveScan(server, discovered.tools, {
+        cwd: process.cwd(),
+        overallTimeoutMs: opts.timeoutMs,
+        callbackTimeoutMs: opts.callbackTimeoutMs,
+        oracleHost: opts.oracleHost,
+      });
+
+      if (live.probes.some((p) => p.status === "confirmed")) anyConfirmed = true;
+      liveResults.push(live);
+      if (!opts.json) reports.push(renderLiveMarkdownReport(staticResult, live));
+    }
+
+    // One JSON document for the whole run (never multiple concatenated
+    // objects, even with several discovered servers) so --json output stays
+    // parseable by a single JSON.parse().
+    const output = opts.json
+      ? JSON.stringify({ static: staticResult, live: liveResults }, null, 2)
+      : reports.join("\n");
+
+    if (opts.out) {
+      await writeFile(opts.out, output, "utf8");
+      logStatus(chalk.dim(`report written to ${opts.out}`));
+    } else {
+      console.log(output);
+    }
+
+    if (anyConfirmed) {
+      logStatus(
+        chalk.red("Failing: at least one finding was CONFIRMED via oracle callback")
+      );
+      process.exitCode = 1;
+    }
+  }
+);
 
 try {
   await program.parseAsync();
