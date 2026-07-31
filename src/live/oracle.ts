@@ -19,15 +19,23 @@
  * It binds to 127.0.0.1 by default, sufficient when there's no container
  * network namespace in the way (SSE targets; anything not routed through
  * sandbox.ts). For containerized stdio targets, liveScan.ts constructs
- * this with the scan's sandbox network's own gateway address instead —
- * verified empirically that a container cannot reach a host listener
- * bound to 127.0.0.1 at all (a loopback-bound socket only accepts
- * loopback-origin connections), so binding to the bridge gateway address
- * is required, not just an option. `advertisedHost` lets the *embedded*
- * callback URL differ from the bind host: the payload a container-side
- * process sees needs `host.docker.internal` (mapped by sandbox.ts to that
- * same gateway address), since `127.0.0.1` inside the container means the
- * container itself, not this listener.
+ * this with whichever bind host sandbox.ts's TargetSandbox determines is
+ * actually reachable on this Docker backend (`oracleBindHost`) — plain
+ * host loopback on Docker Desktop (verified empirically, and the backend
+ * these claims were measured on: the gateway address Docker reports is
+ * real only *inside* Desktop's VM, not bindable from this host process at
+ * all, and a loopback bind is what a callback actually reaches via
+ * Desktop's own host-proxy plumbing), or the scan's sandbox network's own
+ * gateway address on native Linux Engine (where a container is not
+ * expected to reach a host listener bound to 127.0.0.1 at all, since a
+ * loopback-bound socket only accepts loopback-origin connections — that
+ * path follows documented behavior and is not verified end-to-end here;
+ * see sandbox.ts's header). `advertisedHost` lets the *embedded* callback URL
+ * differ from the bind host: the payload a container-side process sees
+ * needs `host.docker.internal` (mapped by sandbox.ts to whichever address
+ * containers on that network actually reach the host through), since
+ * `127.0.0.1` inside the container means the container itself, not this
+ * listener.
  */
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { randomBytes } from "node:crypto";

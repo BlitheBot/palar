@@ -20,6 +20,7 @@ import {
   saveSnapshot,
 } from "../core/snapshot.js";
 import { runLiveScan } from "../live/liveScan.js";
+import { sweepOrphanedSandboxState } from "../live/sandbox.js";
 import { renderLiveMarkdownReport } from "../live/report.js";
 
 const program = new Command();
@@ -311,7 +312,13 @@ addLimitOptions(
       "required: confirms you understand this spawns/connects to the target for real " +
         "(stdio targets sandboxed in a Docker container, not a VM — see --help)"
     )
-    .option("--timeout-ms <n>", "hard ceiling for the whole live scan per server", positiveInt, 30_000)
+    .option("--timeout-ms <n>", "hard ceiling for the whole live scan per server", positiveInt, 60_000)
+    .option(
+      "--connect-timeout-ms <n>",
+      "how long to wait for a target's connect/handshake (stdio targets must start a container first)",
+      positiveInt,
+      30_000
+    )
     .option(
       "--callback-timeout-ms <n>",
       "how long to wait for an oracle callback after each probe",
@@ -320,7 +327,7 @@ addLimitOptions(
     )
     .option(
       "--oracle-host <host>",
-      "host the callback listener binds to for SSE targets (stdio targets always bind to their sandbox network's gateway address)",
+      "host the callback listener binds to for SSE targets (stdio targets bind to whatever address is actually reachable on this Docker backend, chosen automatically)",
       "127.0.0.1"
     )
     .option("--json", "output raw results as JSON")
@@ -332,6 +339,7 @@ addLimitOptions(
       dir?: string[];
       execute?: boolean;
       timeoutMs: number;
+      connectTimeoutMs: number;
       callbackTimeoutMs: number;
       oracleHost: string;
       json?: boolean;
@@ -361,6 +369,42 @@ addLimitOptions(
       return;
     }
 
+    // The two ceilings interact rather than add: --timeout-ms races the
+    // whole scan, so if it isn't larger than --connect-timeout-ms it
+    // preempts it and the connect timeout never gets to apply. Warned
+    // rather than rejected — a deliberately tiny overall budget is a
+    // legitimate thing to ask for, it just shouldn't look like the connect
+    // timeout is what's being honored.
+    if (opts.connectTimeoutMs >= opts.timeoutMs) {
+      logStatus(
+        chalk.yellow(
+          `warning: --connect-timeout-ms (${opts.connectTimeoutMs}) is not below --timeout-ms ` +
+            `(${opts.timeoutMs}), which bounds the entire scan — the overall ceiling will fire ` +
+            `first and the connect timeout will never apply`
+        )
+      );
+    }
+
+    // Before anything else creates state of its own: reclaim sandbox
+    // leftovers from a previous run that never reached teardown (crash,
+    // kill, Ctrl-C). Reported rather than silent — a live container or a
+    // stray netfilter jump surviving a crash is worth the user knowing
+    // about, not something to clean up behind their back.
+    const swept = await sweepOrphanedSandboxState();
+    const sweptCount =
+      swept.containers.length + swept.networks.length + swept.iptables.length;
+    if (sweptCount > 0) {
+      logStatus(
+        chalk.yellow(
+          `reclaimed ${sweptCount} orphaned sandbox object(s) from a previous run ` +
+            `that did not tear down cleanly:`
+        )
+      );
+      for (const name of swept.containers) logStatus(chalk.dim(`  container ${name}`));
+      for (const name of swept.networks) logStatus(chalk.dim(`  network ${name}`));
+      for (const line of swept.iptables) logStatus(chalk.dim(`  iptables ${line}`));
+    }
+
     const config = await loadCliConfig(opts);
     const roots = [...paths, ...(opts.dir ?? [])];
     const discovered = await discover(roots, { maxFileSize: config.limits.maxFileSize });
@@ -387,6 +431,7 @@ addLimitOptions(
       const live = await runLiveScan(server, discovered.tools, {
         targetDir: dirname(file),
         overallTimeoutMs: opts.timeoutMs,
+        connectTimeoutMs: opts.connectTimeoutMs,
         callbackTimeoutMs: opts.callbackTimeoutMs,
         oracleHost: opts.oracleHost,
       });

@@ -141,7 +141,12 @@ mcpguard live fixtures/vuln-server --execute
 
 `--execute` is required — `live` refuses to run without it, since (unlike
 `scan`) it has real side effects. Other flags: `--timeout-ms` (hard ceiling
-for the whole scan per server, default 30000), `--callback-timeout-ms`,
+for the whole scan per server, default 60000), `--connect-timeout-ms` (how
+long to wait for a target's connect/handshake, default 30000 — a stdio
+target has to start a container and then get itself to the point of
+answering, measured at 8–10s for the `vuln-server` fixture on Docker
+Desktop; `--timeout-ms` bounds the whole scan, so keep it the larger of the
+two or it preempts this one), `--callback-timeout-ms`,
 `--oracle-host` (default `127.0.0.1`, SSE targets only — see below),
 `--json`, `--out`. Exits `1` if any finding was CONFIRMED.
 
@@ -167,24 +172,57 @@ Per scan:
   / `src/live/sandbox.ts`) from exactly `mcp.server.json`'s own `"env"`
   field — no ambient host environment reaches the container;
 - egress is restricted to exactly this scan's own oracle callback
-  listener: a per-scan `iptables` chain is inserted into Docker's
-  `DOCKER-USER` hook (`ACCEPT` to the oracle, `REJECT` everything else) and
-  removed on teardown, alongside the container and network. The oracle
-  itself binds to that scan's bridge network gateway address (not
-  `127.0.0.1` — a loopback-bound listener isn't reachable from inside a
-  container), so `--oracle-host` only affects the SSE case.
+  listener: a per-scan `iptables` chain (`ACCEPT` to the oracle, `REJECT`
+  everything else) is hooked in from **two** places, because they cover
+  disjoint traffic — Docker's `DOCKER-USER` chain, which only sees
+  *forwarded* traffic (the container reaching the outside world or another
+  container), and `INPUT`, scoped `-s <this scan's subnet>`, which sees
+  host-*destined* traffic that terminates on the host's own stack rather
+  than being forwarded. Without the `INPUT` hook, services listening on the
+  host itself stay reachable from the sandbox at the bridge gateway
+  address. Both jumps and the chain are removed on teardown, alongside the
+  container and network;
+- **the sandbox has no DNS resolver at all**: its only nameserver points at
+  container-local loopback, where nothing listens, so any hostname lookup
+  fails immediately. Nothing about scanning an MCP server requires
+  resolving arbitrary hostnames, and Docker's own resolver otherwise keeps
+  answering external queries straight through the egress rules above. The
+  oracle callback is unaffected — `host.docker.internal` is pinned in the
+  container's `/etc/hosts`, which needs no resolver;
+- on startup, `live` sweeps up sandbox state orphaned by an earlier run
+  that never reached teardown (a crash, a kill, a Ctrl-C): leftover
+  `mcpg-*` containers and networks and `MCPG-*` chains with their
+  `DOCKER-USER`/`INPUT` jumps. It reports what it reclaimed rather than
+  cleaning up silently. This matters because a `docker run` client killed
+  by Ctrl-C does *not* stop the container it started, so an orphan can
+  otherwise outlive the scan indefinitely.
+
+The oracle binds to whichever address is actually reachable on the detected
+Docker backend (host loopback on Docker Desktop; that scan's bridge network
+gateway on native Linux Engine, where a loopback-bound listener isn't
+reachable from inside a container), so `--oracle-host` only affects the SSE
+case.
 
 **What this is, plainly stated:** Docker + `iptables` container isolation,
 not a VM and not gVisor — a kernel-level container escape is not mitigated.
 Named gaps, not silently deferred:
 
-- the `DOCKER-USER` chain is shared, host-global state; concurrent
-  `mcpguard live` invocations against the same Docker daemon aren't
-  supported yet (the per-scan chain limits this to one shared jump-rule
-  insert/delete per scan, but that's still a race, not eliminated);
-- this has only been verified against a native Linux Docker Engine +
-  iptables/netfilter backend — Docker Desktop and nftables-only hosts are
-  untested;
+- the `DOCKER-USER` and `INPUT` chains are shared, host-global state;
+  concurrent `mcpguard live` invocations against the same Docker daemon
+  aren't supported yet (the per-scan chain limits this to two shared
+  jump-rule inserts/deletes per scan, but that's still a race, not
+  eliminated). The startup sweep sharpens this: it can't tell a crashed
+  run's leftovers from a concurrent run's live state, so a second
+  invocation will reclaim the first's container and chains;
+- **verified against Docker Desktop (Windows/WSL2)** — that's the backend
+  the containment claims were actually measured on, by dumping live
+  netfilter state mid-scan and probing the sandbox from a second shell
+  (host-namespace listener unreachable, DNS resolution failing, oracle
+  callback still landing). The native Linux Docker Engine path is
+  implemented from documented Docker/netfilter behavior but is **not**
+  verified end-to-end; nftables-only hosts, where the `iptables` shim may
+  not apply these rules as written, are untested. Re-run those checks
+  before trusting either;
 - the oracle callback listener has no rate-limiting or body-size cap;
 - resource limits are best-effort hardening against fork-bombing/resource
   exhaustion, not a hard guarantee on par with a VM boundary;
@@ -317,7 +355,8 @@ src/
 docker/       Dockerfiles for the `live` sandbox: target-runtime (minimal
               node:20-slim the target's own command runs in) and net-helper
               (alpine + iptables, used only to install/remove the per-scan
-              DOCKER-USER firewall rule)
+              DOCKER-USER and INPUT firewall rules and to sweep up ones
+              orphaned by a crashed run)
 ```
 
 Rules implement a small `check(definition, context) → Finding[]` interface

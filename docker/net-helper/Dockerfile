@@ -1,5 +1,7 @@
 # Short-lived privileged helper used only to install/remove the per-scan
-# DOCKER-USER jump rule and its MCPG-<id> chain (see src/live/sandbox.ts).
+# MCPG-<id> chain and its two jump rules (DOCKER-USER for forwarded
+# traffic, INPUT for host-destined traffic), and to sweep up ones orphaned
+# by a run that never reached teardown (see src/live/sandbox.ts).
 # Run with --network host so its iptables calls land in the same netfilter
 # state as the Docker daemon's own DOCKER-USER chain — on native Linux
 # Engine that's the host's netns directly; on Docker Desktop it's the

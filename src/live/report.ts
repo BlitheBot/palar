@@ -112,7 +112,7 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   lines.push(
     `- **Oracle listener:** ${live.oracle.baseUrl} (${
       live.transportKind === "stdio"
-        ? "bound to this scan's sandbox network gateway, reachable only from its container"
+        ? "bound to the address this scan's sandbox container reaches the host through — the sandbox's one permitted egress destination, everything else rejected"
         : "loopback-only"
     } — see limitations below)`
   );
@@ -227,10 +227,12 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   if (live.transportKind === "stdio") {
     lines.push(
       "- The target ran inside an ephemeral, network-restricted Docker container (read-only " +
-        "mount, dropped capabilities, resource limits, egress restricted to this scan's own " +
-        "oracle). That is container isolation, not a VM or gVisor — a kernel-level container " +
-        "escape is not mitigated. See README.md's \"Live scanning\" section for the full list " +
-        "of what is and isn't covered."
+        "mount, dropped capabilities, resource limits, no working DNS resolver, and egress — " +
+        "both forwarded and host-destined — restricted to this scan's own oracle). That is " +
+        "container isolation, not a VM or gVisor — a kernel-level container escape is not " +
+        "mitigated, and these containment properties were verified on Docker Desktop, not on " +
+        "a native Linux Engine or nftables-only host. See README.md's \"Live scanning\" " +
+        "section for the full list of what is and isn't covered."
     );
   } else {
     lines.push(

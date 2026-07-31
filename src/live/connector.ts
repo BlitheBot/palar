@@ -63,7 +63,18 @@ export async function connectLive(
   server: MCPServerConfig,
   opts: ConnectOptions = {}
 ): Promise<LiveConnection> {
-  const connectTimeoutMs = opts.connectTimeoutMs ?? 10_000;
+  // 30s, not the 10s this used to default to. A stdio target's connect
+  // covers container start plus whatever the target does before it answers
+  // the MCP handshake — for the vuln-server fixture (Node + tsx compiling
+  // TypeScript in a cold container) that was measured at 8.2–9.9s across
+  // runs on Docker Desktop, i.e. a coin-flip against a 10s ceiling that
+  // reported a healthy target as a connect timeout roughly half the time.
+  // This is a backstop against a target that never answers, so it should
+  // sit well clear of legitimate slow starts rather than tightly bound
+  // them. Callers who need a tighter bound pass connectTimeoutMs
+  // (`--connect-timeout-ms`); note liveScan.ts's overall ceiling preempts
+  // this one if it is the smaller of the two.
+  const connectTimeoutMs = opts.connectTimeoutMs ?? 30_000;
   const client = new Client({ name: "mcpguard-live-scanner", version: "0.1.0" });
 
   if (server.transport === "sse") {

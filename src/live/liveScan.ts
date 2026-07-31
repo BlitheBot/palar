@@ -9,10 +9,17 @@
  *     restricted Docker container, mounted read-only, with dropped
  *     capabilities and resource limits — not directly on this host
  *   - the container's only permitted egress is to this scan's own oracle
- *     callback listener; everything else is rejected at the firewall
+ *     callback listener; everything else is rejected at the firewall,
+ *     both forwarded traffic (DOCKER-USER) and host-destined traffic
+ *     (INPUT) — the latter is what services listening on the host itself
+ *     would otherwise be reachable through
+ *   - the container has no working DNS resolver at all, so it cannot
+ *     resolve arbitrary hostnames; the oracle callback works regardless
+ *     because host.docker.internal is pinned in the container's /etc/hosts
  *   - the whole scan is bounded by a hard overall timeout, and the
- *     container/network/firewall rule are torn down unconditionally in
- *     `finally`, success, failure, or timeout
+ *     container/network/firewall rules are torn down unconditionally in
+ *     `finally`, success, failure, or timeout; anything an earlier crashed
+ *     run orphaned is reclaimed by the CLI's startup sweep
  * NOT covered: this is container isolation (Docker + iptables), not a VM
  * or gVisor — a kernel-level container escape isn't mitigated. See
  * README.md's "Live scanning" section for the full list of what's still
@@ -45,16 +52,26 @@ import type {
 export interface LiveScanOptions {
   /** Read-only container mount root for stdio targets — the target's own directory, not mcpguard's. */
   targetDir?: string;
+  /** How long to wait for the connect/handshake, default 30000ms (see connector.ts). */
   connectTimeoutMs?: number;
   /** How long to wait for an oracle callback after each probe call, default 4000ms. */
   callbackTimeoutMs?: number;
-  /** Hard ceiling for the whole scan (connect + listTools + all probes), default 30000ms. */
+  /**
+   * Hard ceiling for the whole scan (connect + listTools + all probes),
+   * default 60000ms. Must stay comfortably above connectTimeoutMs: this
+   * deadline races the entire scan, so a smaller value here silently
+   * preempts the connect timeout rather than adding to it. The default
+   * leaves room for a worst-case 30s connect plus the ~11s of listTools
+   * and probing measured against the vuln-server fixture.
+   */
   overallTimeoutMs?: number;
   /**
    * Oracle bind host — only meaningful for SSE targets. For stdio targets
-   * the oracle binds to the scan's own sandbox network's gateway address
-   * instead, since that's the only address a container on that network can
-   * actually reach (see sandbox.ts); this option is ignored in that case.
+   * the oracle instead binds to whatever sandbox.ts's TargetSandbox decides
+   * is actually reachable/bindable on this Docker backend (host loopback
+   * on Docker Desktop, the sandbox network's gateway address on native
+   * Linux Engine — see sandbox.ts's `oracleBindHost`); this option is
+   * ignored in that case.
    */
   oracleHost?: string;
 }
@@ -154,7 +171,7 @@ export async function runLiveScan(
   opts: LiveScanOptions = {}
 ): Promise<LiveAuditResult> {
   const start = Date.now();
-  const overallTimeoutMs = opts.overallTimeoutMs ?? 30_000;
+  const overallTimeoutMs = opts.overallTimeoutMs ?? 60_000;
   const callbackTimeoutMs = opts.callbackTimeoutMs ?? 4_000;
   const warnings: string[] = [];
   const errors: string[] = [];
@@ -197,9 +214,9 @@ export async function runLiveScan(
 
   const work = (async () => {
     // Docker is mandatory for stdio: the sandbox (and the container network
-    // it creates) has to exist before the oracle starts, because the
-    // oracle must bind to that network's own gateway address — a listener
-    // on 127.0.0.1 is unreachable from inside the container (see
+    // it creates) has to exist before the oracle starts, because which
+    // address the oracle can both bind to and be reached at is a property
+    // of the detected Docker backend and that specific network (see
     // sandbox.ts / oracle.ts docstrings). SSE has no local process, so no
     // sandbox is created and the oracle keeps its original loopback/
     // opts.oracleHost behavior.
@@ -210,7 +227,7 @@ export async function runLiveScan(
     }
 
     const oracle = sandbox
-      ? new CallbackOracle(sandbox.gatewayIp, { advertisedHost: "host.docker.internal" })
+      ? new CallbackOracle(sandbox.oracleBindHost, { advertisedHost: "host.docker.internal" })
       : new CallbackOracle(opts.oracleHost ?? "127.0.0.1");
     await oracle.start();
     holder.oracle = oracle;
