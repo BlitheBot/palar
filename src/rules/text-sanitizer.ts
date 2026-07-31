@@ -10,7 +10,7 @@ import type { RuleContext, ToolRule } from "./index.js";
 import type { UnicodeCategoryName } from "../core/config.js";
 import { DEFAULT_CONFIG, parseCodePointRanges } from "../core/config.js";
 
-const COMPLIANCE_REFS = ["MCP-TOP10:B2-ToolPoisoning"];
+const COMPLIANCE_REFS = ["OWASP MCP03:2025 - Tool Poisoning"];
 
 interface CodePointCategory {
   ruleId: string;

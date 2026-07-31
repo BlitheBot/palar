@@ -15,7 +15,9 @@ import type {
 import type { RuleContext, ServerRule, ToolRule } from "./index.js";
 import { DEFAULT_LIMITS } from "../core/config.js";
 
-const COMPLIANCE_REFS = ["MCP-TOP10:C9-CredentialLeak"];
+const COMPLIANCE_REFS = [
+  "OWASP MCP01:2025 - Token Mismanagement & Secret Exposure",
+];
 
 interface CredentialPattern {
   ruleId: string;

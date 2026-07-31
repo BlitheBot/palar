@@ -8,7 +8,12 @@ import type { RuleContext, ServerRule } from "./index.js";
 import type { NetworkPatterns } from "../core/config.js";
 import { DEFAULT_CONFIG } from "../core/config.js";
 
-const COMPLIANCE_REFS = ["MCP-TOP10:C3-SSRF"];
+/**
+ * Internal mcpguard category, deliberately not an OWASP MCP Top 10 ID: the
+ * Top 10 has no server-side request forgery entry, so an "MCP-TOP10:" prefix
+ * here would imply an alignment that does not exist.
+ */
+const COMPLIANCE_REFS = ["mcpguard:SSRF"];
 
 /**
  * Normalize a host string for pattern matching: trim, lowercase, unwrap

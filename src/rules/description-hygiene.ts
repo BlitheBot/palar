@@ -9,7 +9,7 @@ import type { Finding, MCPToolDefinition } from "../core/types.js";
 import type { RuleContext, ToolRule } from "./index.js";
 import { DEFAULT_CONFIG } from "../core/config.js";
 
-const COMPLIANCE_REFS = ["MCP-TOP10:B2-ToolPoisoning"];
+const COMPLIANCE_REFS = ["OWASP MCP03:2025 - Tool Poisoning"];
 
 /** Single generic words that describe nothing. */
 const GENERIC_PLACEHOLDERS = new Set([

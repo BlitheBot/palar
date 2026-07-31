@@ -82,6 +82,21 @@ function escapeSuspicious(text: string): string {
   });
 }
 
+/**
+ * Findings mapped to the OWASP MCP Top 10 carry refs starting with this
+ * prefix. The list is still a Phase 3 beta, so reports say so rather than
+ * presenting the mapping as stable. Only category names and IDs are cited —
+ * OWASP's descriptive text is CC BY-NC-SA and is not reproduced here.
+ */
+const OWASP_REF_PREFIX = "OWASP MCP";
+
+const OWASP_BETA_NOTE =
+  "References beginning `OWASP MCP` map to the [OWASP MCP Top 10]" +
+  "(https://owasp.org/www-project-mcp-top-10/), currently a **Phase 3 beta** — " +
+  "its category names and IDs may still change before release. Only category " +
+  "names and IDs are cited. References beginning `mcpguard:` are internal " +
+  "categories with no OWASP MCP Top 10 equivalent.";
+
 function renderFinding(finding: Finding): string {
   const lines: string[] = [];
   const location = finding.location.jsonPath
@@ -146,6 +161,16 @@ export function renderMarkdownReport(result: AuditResult): string {
         lines.push("");
       }
     }
+  }
+
+  const citesOwasp = result.findings.some((f) =>
+    f.complianceRefs?.some((ref) => ref.startsWith(OWASP_REF_PREFIX))
+  );
+  if (citesOwasp) {
+    lines.push("## About the compliance references");
+    lines.push("");
+    lines.push(OWASP_BETA_NOTE);
+    lines.push("");
   }
 
   if (result.warnings.length > 0) {

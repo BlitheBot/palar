@@ -7,7 +7,7 @@ import type { Finding, JSONSchemaProperty, MCPToolDefinition } from "../core/typ
 import type { RuleContext, ToolRule } from "./index.js";
 import { DEFAULT_LIMITS } from "../core/config.js";
 
-const COMPLIANCE_REFS = ["MCP-TOP10:A1-InjectionSurface"];
+const COMPLIANCE_REFS = ["OWASP MCP05:2025 - Command Injection & Execution"];
 
 const VALID_TYPES = new Set([
   "string",
