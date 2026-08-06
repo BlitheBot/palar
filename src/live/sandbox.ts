@@ -50,6 +50,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { MCPServerConfig } from "../core/types.js";
+import type { ScanLock } from "./lock.js";
 import { buildCleanEnv } from "./env.js";
 
 const execFileAsync = promisify(execFile);
@@ -450,16 +451,30 @@ export interface SweepResult {
  * once at startup, before any sandbox is created, so it can't race the
  * caller's own state.
  *
- * Concurrency caveat, deliberately not papered over: this treats every
- * `mcpg-`/`MCPG-` object as orphaned, because it cannot distinguish a crashed
- * run's leftovers from a concurrent run's live state — a container left
+ * Concurrency: this treats every `mcpg-`/`MCPG-` object as orphaned, and
+ * that is correct rather than merely expedient — but only because of an
+ * invariant enforced elsewhere. This function cannot itself tell a crashed
+ * run's leftovers from a concurrent run's live state (a container left
  * running by Ctrl-C looks exactly like one a healthy concurrent scan is
- * using. Since a running orphan is the single most important thing to
- * reclaim, the sweep takes it. Concurrent `palar live` invocations
- * against one Docker daemon were already unsupported (see README's named
- * gaps); this makes that sharper rather than adding a new limitation.
+ * using), so the CLI removes the ambiguity instead of resolving it: it
+ * holds the host-wide live-scan lock (live/lock.ts) across this call and
+ * the entire scan that follows, which means no second palar live scan can
+ * exist to own any of it.
+ *
+ * **Callers must hold that lock**, which is why one is a required
+ * parameter rather than a documented precondition: without it this would
+ * happily reclaim a running scan's container and delete its egress
+ * firewall. The `lock` argument is not otherwise used — it exists so the
+ * compiler refuses a call that cannot prove the invariant, and so
+ * assertHeld() can catch the case the type system can't see (a lock object
+ * that was legitimately obtained but has since been released).
+ *
+ * The lock is host-local, so the one uncovered case is two machines
+ * pointed at the same remote Docker daemon — see README's named gaps.
  */
-export async function sweepOrphanedSandboxState(): Promise<SweepResult> {
+export async function sweepOrphanedSandboxState(lock: ScanLock): Promise<SweepResult> {
+  lock.assertHeld("sweepOrphanedSandboxState()");
+
   const result: SweepResult = { containers: [], networks: [], iptables: [] };
 
   // Docker missing entirely is not an error here: an SSE-only run needs no
@@ -506,6 +521,23 @@ export async function sweepOrphanedSandboxState(): Promise<SweepResult> {
     // referenced. Rules are turned back into delete commands by rewriting
     // `-A` to `-D`, so whatever subnet the orphan used is matched exactly
     // without this process having to remember it.
+    //
+    // This matches EVERY `-j MCPG-` rule and every MCPG-* chain, with no
+    // scan-id discrimination — deliberately, and safe by construction
+    // rather than by luck. The CLI takes the host-wide live-scan lock
+    // (live/lock.ts) before calling this and holds it for the whole run,
+    // and that lock is what guarantees no other palar live scan can be
+    // running on this host. So every MCPG-* object netfilter still has is
+    // necessarily a crashed run's leftovers, never a concurrent scan's live
+    // firewall. Without the lock this wildcard would be actively dangerous:
+    // it would strip a running scan's ACCEPT/REJECT pair and leave its
+    // sandbox container up with unrestricted egress.
+    //
+    // If that lock is ever removed, relaxed to allow concurrent scans, or
+    // this function grows a caller that doesn't hold it, this script MUST
+    // become id-scoped first. The one case the lock does not cover is two
+    // separate machines sharing one remote Docker daemon (pids aren't
+    // comparable across hosts) — a documented limitation, see README.
     const script = [
       `for parent in DOCKER-USER INPUT; do`,
       `  iptables -S "$parent" 2>/dev/null | grep -- '-j MCPG-' | sed 's/^-A /-D /' | while read -r rule; do`,

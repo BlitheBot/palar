@@ -189,13 +189,34 @@ Per scan:
   answering external queries straight through the egress rules above. The
   oracle callback is unaffected — `host.docker.internal` is pinned in the
   container's `/etc/hosts`, which needs no resolver;
+- **live scans are serialized on the host by an exclusive lock.** `live`
+  takes a single lock file before it touches any sandbox state and holds it
+  for the whole run, so a second invocation on the same machine refuses to
+  start (`another palar live scan is running (pid N, started ...)`) rather
+  than racing the first on the shared netfilter chains below. The lock
+  lives in a per-user app state directory — `$XDG_STATE_HOME/palar`
+  (falling back to `~/.local/state/palar`) on Linux/macOS,
+  `%LOCALAPPDATA%\palar` on Windows — deliberately **not** the OS temp
+  directory, where a tmp cleaner deleting a live scan's lock mid-run would
+  silently reopen the race;
+- a lock left behind by a crashed run does not wedge the tool. Staleness is
+  decided by process identity, never by age: the recorded pid is checked
+  for existence, and its recorded start time is compared against the live
+  process's actual start time so a recycled pid can't masquerade as the
+  original holder. A dead or recycled holder's lock is broken, reclaimed
+  and reported; a genuinely live one is refused. There is no timeout
+  heuristic, because a legitimately long scan must never become
+  reclaimable while it is still firewalling a running container;
 - on startup, `live` sweeps up sandbox state orphaned by an earlier run
   that never reached teardown (a crash, a kill, a Ctrl-C): leftover
   `mcpg-*` containers and networks and `MCPG-*` chains with their
   `DOCKER-USER`/`INPUT` jumps. It reports what it reclaimed rather than
   cleaning up silently. This matters because a `docker run` client killed
   by Ctrl-C does *not* stop the container it started, so an orphan can
-  otherwise outlive the scan indefinitely.
+  otherwise outlive the scan indefinitely. The sweep reclaims *every*
+  `mcpg-`/`MCPG-` object without trying to tell whose it is, which is safe
+  precisely because the lock above guarantees no other live scan exists to
+  own one.
 
 The oracle binds to whichever address is actually reachable on the detected
 Docker backend (host loopback on Docker Desktop; that scan's bridge network
@@ -207,13 +228,20 @@ case.
 not a VM and not gVisor — a kernel-level container escape is not mitigated.
 Named gaps, not silently deferred:
 
-- the `DOCKER-USER` and `INPUT` chains are shared, host-global state;
-  concurrent `palar live` invocations against the same Docker daemon
-  aren't supported yet (the per-scan chain limits this to two shared
-  jump-rule inserts/deletes per scan, but that's still a race, not
-  eliminated). The startup sweep sharpens this: it can't tell a crashed
-  run's leftovers from a concurrent run's live state, so a second
-  invocation will reclaim the first's container and chains;
+- the `DOCKER-USER` and `INPUT` chains are shared, host-global state.
+  Concurrent `palar live` runs are no longer a race — they are prevented:
+  the host lock described above serializes them, so a second invocation
+  refuses instead of interleaving jump-rule inserts/deletes or sweeping the
+  first scan's live firewall away. **The lock is host-local, and that is
+  the remaining gap:** two *separate machines* pointed at the same remote
+  Docker daemon (via `DOCKER_HOST` or a shared socket/TCP endpoint) are
+  still unprotected. Neither can see the other's state directory, and pids
+  aren't comparable across hosts, so the original race — and the startup
+  sweep reclaiming the other machine's live container and chains — applies
+  in full. Don't point two machines' `palar live` at one shared daemon. A
+  lock file written on another host is detected by hostname and refused
+  rather than guessed at, but that only covers a *shared state directory*
+  (a roamed or network-mounted home), not a shared daemon;
 - **verified against Docker Desktop (Windows/WSL2)** — that's the backend
   the containment claims were actually measured on, by dumping live
   netfilter state mid-scan and probing the sandbox from a second shell

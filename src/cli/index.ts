@@ -21,6 +21,7 @@ import {
 } from "../core/snapshot.js";
 import { runLiveScan } from "../live/liveScan.js";
 import { sweepOrphanedSandboxState } from "../live/sandbox.js";
+import { ScanLock, ScanLockHeldError } from "../live/lock.js";
 import { renderLiveMarkdownReport } from "../live/report.js";
 
 const program = new Command();
@@ -385,81 +386,116 @@ addLimitOptions(
       );
     }
 
-    // Before anything else creates state of its own: reclaim sandbox
-    // leftovers from a previous run that never reached teardown (crash,
-    // kill, Ctrl-C). Reported rather than silent — a live container or a
-    // stray netfilter jump surviving a crash is worth the user knowing
-    // about, not something to clean up behind their back.
-    const swept = await sweepOrphanedSandboxState();
-    const sweptCount =
-      swept.containers.length + swept.networks.length + swept.iptables.length;
-    if (sweptCount > 0) {
+    // Before the sweep, and before anything creates sandbox state: take the
+    // host-wide live-scan lock. This is what makes the sweep below safe —
+    // holding it means no other palar live scan can be running, so every
+    // mcpg-/MCPG- object on the daemon really is an orphan rather than
+    // possibly a concurrent scan's live state. See lock.ts.
+    let lock: ScanLock;
+    try {
+      lock = await ScanLock.acquire();
+    } catch (err) {
+      if (err instanceof ScanLockHeldError) {
+        logStatus(chalk.yellow(`palar live: ${err.message}`));
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    lock.installCrashHandlers();
+    if (lock.reclaimed) {
       logStatus(
-        chalk.yellow(
-          `reclaimed ${sweptCount} orphaned sandbox object(s) from a previous run ` +
-            `that did not tear down cleanly:`
-        )
+        chalk.yellow(`reclaimed a stale live-scan lock (${lock.reclaimed})`)
       );
-      for (const name of swept.containers) logStatus(chalk.dim(`  container ${name}`));
-      for (const name of swept.networks) logStatus(chalk.dim(`  network ${name}`));
-      for (const line of swept.iptables) logStatus(chalk.dim(`  iptables ${line}`));
     }
 
-    const config = await loadCliConfig(opts);
-    const roots = [...paths, ...(opts.dir ?? [])];
-    const discovered = await discover(roots, { maxFileSize: config.limits.maxFileSize });
-    for (const warning of discovered.warnings) {
-      console.error(chalk.dim(`warning: ${warning}`));
-    }
+    try {
+      // Reclaim sandbox leftovers from a previous run that never reached
+      // teardown (crash, kill, Ctrl-C). Reported rather than silent — a live
+      // container or a stray netfilter jump surviving a crash is worth the
+      // user knowing about, not something to clean up behind their back.
+      // Passing the lock is the point, not ceremony: the sweep's signature
+      // requires one, so this call is the compiler's proof that the
+      // wildcard reclaim below can only ever be looking at orphans.
+      const swept = await sweepOrphanedSandboxState(lock);
+      const sweptCount =
+        swept.containers.length + swept.networks.length + swept.iptables.length;
+      if (sweptCount > 0) {
+        logStatus(
+          chalk.yellow(
+            `reclaimed ${sweptCount} orphaned sandbox object(s) from a previous run ` +
+              `that did not tear down cleanly:`
+          )
+        );
+        for (const name of swept.containers) logStatus(chalk.dim(`  container ${name}`));
+        for (const name of swept.networks) logStatus(chalk.dim(`  network ${name}`));
+        for (const line of swept.iptables) logStatus(chalk.dim(`  iptables ${line}`));
+      }
 
-    if (discovered.servers.length === 0) {
-      logStatus(
-        chalk.yellow(
-          `No MCP server definition files found under: ${roots.length > 0 ? roots.join(", ") : process.cwd()}`
-        )
-      );
-      return;
-    }
+      const config = await loadCliConfig(opts);
+      const roots = [...paths, ...(opts.dir ?? [])];
+      const discovered = await discover(roots, { maxFileSize: config.limits.maxFileSize });
+      for (const warning of discovered.warnings) {
+        console.error(chalk.dim(`warning: ${warning}`));
+      }
 
-    const staticResult = runAudit(discovered, config);
-    let anyConfirmed = false;
-    const liveResults: Awaited<ReturnType<typeof runLiveScan>>[] = [];
-    const reports: string[] = [];
+      if (discovered.servers.length === 0) {
+        logStatus(
+          chalk.yellow(
+            `No MCP server definition files found under: ${roots.length > 0 ? roots.join(", ") : process.cwd()}`
+          )
+        );
+        return;
+      }
 
-    for (const { file, config: server } of discovered.servers) {
-      logStatus(chalk.dim(`connecting to "${server.name}" (${server.transport ?? "stdio"})...`));
-      const live = await runLiveScan(server, discovered.tools, {
-        targetDir: dirname(file),
-        overallTimeoutMs: opts.timeoutMs,
-        connectTimeoutMs: opts.connectTimeoutMs,
-        callbackTimeoutMs: opts.callbackTimeoutMs,
-        oracleHost: opts.oracleHost,
-      });
+      const staticResult = runAudit(discovered, config);
+      let anyConfirmed = false;
+      const liveResults: Awaited<ReturnType<typeof runLiveScan>>[] = [];
+      const reports: string[] = [];
 
-      if (live.probes.some((p) => p.status === "confirmed")) anyConfirmed = true;
-      liveResults.push(live);
-      if (!opts.json) reports.push(renderLiveMarkdownReport(staticResult, live));
-    }
+      for (const { file, config: server } of discovered.servers) {
+        logStatus(chalk.dim(`connecting to "${server.name}" (${server.transport ?? "stdio"})...`));
+        const live = await runLiveScan(server, discovered.tools, {
+          targetDir: dirname(file),
+          overallTimeoutMs: opts.timeoutMs,
+          connectTimeoutMs: opts.connectTimeoutMs,
+          callbackTimeoutMs: opts.callbackTimeoutMs,
+          oracleHost: opts.oracleHost,
+        });
 
-    // One JSON document for the whole run (never multiple concatenated
-    // objects, even with several discovered servers) so --json output stays
-    // parseable by a single JSON.parse().
-    const output = opts.json
-      ? JSON.stringify({ static: staticResult, live: liveResults }, null, 2)
-      : reports.join("\n");
+        if (live.probes.some((p) => p.status === "confirmed")) anyConfirmed = true;
+        liveResults.push(live);
+        if (!opts.json) reports.push(renderLiveMarkdownReport(staticResult, live));
+      }
 
-    if (opts.out) {
-      await writeFile(opts.out, output, "utf8");
-      logStatus(chalk.dim(`report written to ${opts.out}`));
-    } else {
-      console.log(output);
-    }
+      // One JSON document for the whole run (never multiple concatenated
+      // objects, even with several discovered servers) so --json output stays
+      // parseable by a single JSON.parse().
+      const output = opts.json
+        ? JSON.stringify({ static: staticResult, live: liveResults }, null, 2)
+        : reports.join("\n");
 
-    if (anyConfirmed) {
-      logStatus(
-        chalk.red("Failing: at least one finding was CONFIRMED via oracle callback")
-      );
-      process.exitCode = 1;
+      if (opts.out) {
+        await writeFile(opts.out, output, "utf8");
+        logStatus(chalk.dim(`report written to ${opts.out}`));
+      } else {
+        console.log(output);
+      }
+
+      if (anyConfirmed) {
+        logStatus(
+          chalk.red("Failing: at least one finding was CONFIRMED via oracle callback")
+        );
+        process.exitCode = 1;
+      }
+    } finally {
+      // Same unconditional-teardown rigor as the sandbox's own container /
+      // network / firewall cleanup: the lock is released on success,
+      // failure and timeout alike, including the early `return` above. The
+      // abrupt paths that skip this `finally` entirely (Ctrl-C, SIGTERM)
+      // are covered by the crash handlers installed above; SIGKILL is
+      // covered by the next run's stale-lock detection.
+      await lock.release();
     }
   }
 );

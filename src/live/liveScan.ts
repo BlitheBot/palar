@@ -23,8 +23,11 @@
  * NOT covered: this is container isolation (Docker + iptables), not a VM
  * or gVisor — a kernel-level container escape isn't mitigated. See
  * README.md's "Live scanning" section for the full list of what's still
- * out of scope (concurrent-scan firewall races, oracle rate-limiting,
- * etc.). SSE targets have no local process to sandbox and are unaffected —
+ * out of scope (oracle rate-limiting, a shared *remote* daemon driven from
+ * two machines, etc.). Concurrent scans on this host are no longer a race:
+ * the CLI serializes them behind an exclusive lock (live/lock.ts) taken
+ * before any sandbox state exists and held for the whole run.
+ * SSE targets have no local process to sandbox and are unaffected —
  * this module's safety posture for them is unchanged: a clean env is moot
  * (nothing is spawned) and only the overall timeout applies.
  */
