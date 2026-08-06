@@ -165,6 +165,6 @@ test("network-bounds stays an internal category, not an OWASP citation", () => {
   );
   assert.ok(findings.length > 0);
   for (const finding of findings) {
-    assert.deepEqual(finding.complianceRefs, ["mcpguard:SSRF"]);
+    assert.deepEqual(finding.complianceRefs, ["palar:SSRF"]);
   }
 });

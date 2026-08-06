@@ -132,15 +132,15 @@ test("malformed configs fail with clear errors", () => {
   );
 });
 
-test("loadConfigFile auto-discovers .mcpguardrc.json and errors on missing explicit path", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "mcpguard-config-"));
+test("loadConfigFile auto-discovers .palarrc.json and errors on missing explicit path", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "palar-config-"));
   try {
     // No file present: defaults.
     const none = await loadConfigFile(undefined, dir);
     assert.deepEqual(none, DEFAULT_CONFIG);
     // Auto-discovered file applies.
     await writeFile(
-      join(dir, ".mcpguardrc.json"),
+      join(dir, ".palarrc.json"),
       JSON.stringify({ configVersion: 1, limits: { maxNestingDepth: 7 } }),
       "utf8"
     );
@@ -152,7 +152,7 @@ test("loadConfigFile auto-discovers .mcpguardrc.json and errors on missing expli
       /not found or unreadable/
     );
     // Malformed file is an error even when auto-discovered.
-    await writeFile(join(dir, ".mcpguardrc.json"), "{ nope", "utf8");
+    await writeFile(join(dir, ".palarrc.json"), "{ nope", "utf8");
     await assert.rejects(() => loadConfigFile(undefined, dir), /malformed JSON/);
   } finally {
     await rm(dir, { recursive: true, force: true });

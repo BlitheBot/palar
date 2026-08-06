@@ -41,7 +41,7 @@ interface LimitOpts {
 }
 
 /**
- * Load config from --config / .mcpguardrc.json (defaults when absent),
+ * Load config from --config / .palarrc.json (defaults when absent),
  * then layer CLI limit flags on top — flags always win over the file.
  */
 async function loadCliConfig(opts: LimitOpts): Promise<ResolvedConfig> {
@@ -74,7 +74,7 @@ const LIMIT_OPTIONS: [flag: string, description: string][] = [
 function addLimitOptions(cmd: Command): Command {
   cmd.option(
     "--config <path>",
-    "path to a config file (default: ./.mcpguardrc.json when present)"
+    "path to a config file (default: ./.palarrc.json when present)"
   );
   for (const [flag, description] of LIMIT_OPTIONS) {
     cmd.option(flag, description, positiveInt);
@@ -83,7 +83,7 @@ function addLimitOptions(cmd: Command): Command {
 }
 
 program
-  .name("mcpguard")
+  .name("palar")
   .description(
     "Read-only static analyzer for local MCP tool and server definition files"
   )
@@ -205,7 +205,7 @@ addLimitOptions(
     .command("snapshot")
     .description("Record a baseline of tool definition hashes for drift detection")
     .option("--dir <dir...>", "directories to scan")
-    .option("--out <file>", "snapshot file to write", ".mcpguard-snapshot.json")
+    .option("--out <file>", "snapshot file to write", ".palar-snapshot.json")
 ).action(
   async (opts: { dir?: string[]; out: string } & LimitOpts) => {
     const config = await loadCliConfig(opts);
@@ -231,10 +231,10 @@ program
   .command("drift")
   .description("Compare current tool definitions against a baseline snapshot")
   .option("--dir <dir...>", "directories to scan")
-  .option("--snapshot <file>", "baseline snapshot file", ".mcpguard-snapshot.json")
+  .option("--snapshot <file>", "baseline snapshot file", ".palar-snapshot.json")
   .option(
     "--config <path>",
-    "path to a config file (default: ./.mcpguardrc.json when present)"
+    "path to a config file (default: ./.palarrc.json when present)"
   )
   .action(async (opts: { dir?: string[]; snapshot: string; config?: string }) => {
     const config = await loadCliConfig(opts);
@@ -243,7 +243,7 @@ program
       console.error(
         chalk.red(
           `no usable snapshot at ${opts.snapshot} (missing or malformed) — ` +
-            `run "mcpguard snapshot" first to record a baseline`
+            `run "palar snapshot" first to record a baseline`
         )
       );
       process.exitCode = 1;
@@ -353,7 +353,7 @@ addLimitOptions(
     if (!opts.execute) {
       logStatus(
         chalk.yellow(
-          "mcpguard live: refusing to run without --execute.\n\n" +
+          "palar live: refusing to run without --execute.\n\n" +
             "This command spawns each discovered server's declared command as a real process " +
             "(or connects to it over SSE) and sends it real crafted input. stdio targets run " +
             "inside an ephemeral, network-restricted Docker container (mounted read-only, " +
@@ -467,6 +467,6 @@ addLimitOptions(
 try {
   await program.parseAsync();
 } catch (err) {
-  console.error(chalk.red(`mcpguard: ${(err as Error).message}`));
+  console.error(chalk.red(`palar: ${(err as Error).message}`));
   process.exitCode = 1;
 }

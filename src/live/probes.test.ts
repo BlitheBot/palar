@@ -107,8 +107,8 @@ test("benignValueFor picks a sane default per declared type", () => {
   assert.equal(benignValueFor({ type: "boolean" }), true);
   assert.deepEqual(benignValueFor({ type: "array" }), []);
   assert.deepEqual(benignValueFor({ type: "object" }), {});
-  assert.equal(benignValueFor({ type: "string" }), "mcpguard-live-probe");
-  assert.equal(benignValueFor(undefined), "mcpguard-live-probe");
+  assert.equal(benignValueFor({ type: "string" }), "palar-live-probe");
+  assert.equal(benignValueFor(undefined), "palar-live-probe");
 });
 
 test("buildProbeArguments fills every property, payload only on the target field", () => {
@@ -126,5 +126,5 @@ test("buildProbeArguments fills every property, payload only on the target field
     "http://127.0.0.1:9999/cb/x"
   );
   assert.equal(args.url, "http://127.0.0.1:9999/cb/x");
-  assert.equal(args.apiKey, "mcpguard-live-probe");
+  assert.equal(args.apiKey, "palar-live-probe");
 });

@@ -84,7 +84,7 @@ function renderPoisoning(check: PoisoningLiveCheck): string {
   }
   lines.push(
     "- No oracle-style confirmation exists for prompt-injection/tool-poisoning findings in " +
-      "this pass: the injected text targets an LLM's judgment, and mcpguard's live scanner is " +
+      "this pass: the injected text targets an LLM's judgment, and palar's live scanner is " +
       "not an LLM, so there is nothing here for it to be tricked into doing. Calling the tool " +
       "directly only exercises the tool's own (non-agentic) code path, captured below."
   );
@@ -99,7 +99,7 @@ function renderPoisoning(check: PoisoningLiveCheck): string {
 
 export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAuditResult): string {
   const lines: string[] = [];
-  lines.push("# mcpguard LIVE audit report");
+  lines.push("# palar LIVE audit report");
   lines.push("");
   lines.push(`- **Timestamp:** ${live.timestamp}`);
   lines.push(
@@ -154,7 +154,7 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   lines.push(
     `${confirmed.length} finding(s) proven via real out-of-band callback: the crafted payload ` +
       `was sent to the live tool over a real MCP connection, and something the target did — ` +
-      `directly or via a shell command it ran — reached back to mcpguard's local listener.`
+      `directly or via a shell command it ran — reached back to palar's local listener.`
   );
   lines.push("");
   if (confirmed.length === 0) {
@@ -237,7 +237,7 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   } else {
     lines.push(
       "- SSE targets connect to an already-running remote server — there is no local process " +
-        "for mcpguard to sandbox here."
+        "for palar to sandbox here."
     );
   }
   lines.push("");

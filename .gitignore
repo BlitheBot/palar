@@ -5,8 +5,8 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# mcpguard artifacts
-.mcpguard-snapshot.json
+# palar artifacts
+.palar-snapshot.json
 
 # Logs
 *.log

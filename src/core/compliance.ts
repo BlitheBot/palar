@@ -94,7 +94,7 @@ const OWASP_BETA_NOTE =
   "References beginning `OWASP MCP` map to the [OWASP MCP Top 10]" +
   "(https://owasp.org/www-project-mcp-top-10/), currently a **Phase 3 beta** — " +
   "its category names and IDs may still change before release. Only category " +
-  "names and IDs are cited. References beginning `mcpguard:` are internal " +
+  "names and IDs are cited. References beginning `palar:` are internal " +
   "categories with no OWASP MCP Top 10 equivalent.";
 
 function renderFinding(finding: Finding): string {
@@ -122,7 +122,7 @@ function renderFinding(finding: Finding): string {
 export function renderMarkdownReport(result: AuditResult): string {
   const lines: string[] = [];
 
-  lines.push("# mcpguard audit report");
+  lines.push("# palar audit report");
   lines.push("");
   lines.push(`- **Timestamp:** ${result.timestamp}`);
   lines.push(`- **Tools scanned:** ${result.toolsScanned}`);

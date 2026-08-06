@@ -50,7 +50,7 @@ import type {
 } from "./types.js";
 
 export interface LiveScanOptions {
-  /** Read-only container mount root for stdio targets — the target's own directory, not mcpguard's. */
+  /** Read-only container mount root for stdio targets — the target's own directory, not palar's. */
   targetDir?: string;
   /** How long to wait for the connect/handshake, default 30000ms (see connector.ts). */
   connectTimeoutMs?: number;

@@ -1,6 +1,6 @@
-name: MCPGuard Scan
+name: Palar Scan
 description: >-
-  Run MCPGuard, a defensive read-only static analyzer for MCP (Model Context
+  Run Palar, a defensive read-only static analyzer for MCP (Model Context
   Protocol) tool and server definition files, as a CI gate. No network calls,
   no payload generation — it only reads local JSON files and reports findings.
 author: BlitheBot
@@ -12,7 +12,8 @@ inputs:
   version:
     description: >-
       Version of @blithedale/mcpguard to install (any npm version or
-      dist-tag).
+      dist-tag). TODO: flip to `palar` once palar is published to npm —
+      see the install step below.
     required: false
     default: latest
   dir:
@@ -41,21 +42,26 @@ inputs:
   artifact-name:
     description: Name of the uploaded report artifact (used when out is set).
     required: false
-    default: mcpguard-report
+    default: palar-report
 
 outputs:
   exit-code:
-    description: Exit code of the mcpguard scan (0 = passed, 1 = gate tripped).
+    description: Exit code of the palar scan (0 = passed, 1 = gate tripped).
     value: ${{ steps.scan.outputs.exit-code }}
 
 runs:
   using: composite
   steps:
-    - name: Install mcpguard
+    # TODO(rename): Palar still installs and invokes its pre-rename package
+    # and binary name. @blithedale/mcpguard@0.1.0 is the only published
+    # release, and it ships its bin as `mcpguard`, so both the install target
+    # below and the `mcpguard` invocation in the scan step must flip together
+    # — once `palar` is published, change them to `palar` in one commit.
+    - name: Install palar
       shell: bash
       run: npm install -g "@blithedale/mcpguard@${{ inputs.version }}"
 
-    - name: Run mcpguard scan
+    - name: Run palar scan
       id: scan
       shell: bash
       env:
@@ -75,6 +81,7 @@ runs:
         if [ -n "$INPUT_OUT" ]; then
           args+=(--out "$INPUT_OUT")
         fi
+        # TODO(rename): flip to `palar` together with the install target above.
         mcpguard "${args[@]}"
         echo "exit-code=$?" >> "$GITHUB_OUTPUT"
 

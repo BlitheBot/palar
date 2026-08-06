@@ -1,6 +1,6 @@
 /**
  * Configuration: hardening limits plus tunable rule inputs, loadable from
- * an optional .mcpguardrc.json (or --config <path>). With no config file
+ * an optional .palarrc.json (or --config <path>). With no config file
  * present, behavior is identical to the built-in defaults.
  */
 import { readFile } from "node:fs/promises";
@@ -115,7 +115,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   },
 };
 
-export const CONFIG_FILE_NAME = ".mcpguardrc.json";
+export const CONFIG_FILE_NAME = ".palarrc.json";
 
 const VALID_SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
 const KNOWN_TOP_LEVEL_KEYS = new Set([
@@ -314,7 +314,7 @@ export function resolveConfig(raw?: unknown, source = ""): ResolvedConfig {
 
 /**
  * Load configuration for a CLI run. An explicit path must exist and parse;
- * otherwise .mcpguardrc.json in searchDir is used when present; otherwise
+ * otherwise .palarrc.json in searchDir is used when present; otherwise
  * defaults. Throws a descriptive Error on missing explicit path or any
  * malformed config.
  */

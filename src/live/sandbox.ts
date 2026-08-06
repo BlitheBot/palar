@@ -1,5 +1,5 @@
 /**
- * Docker-based isolation for `mcpguard live`'s stdio targets. This is what
+ * Docker-based isolation for `palar live`'s stdio targets. This is what
  * makes connector.ts's spawn a contained one: the target's declared
  * command/args run inside an ephemeral, network-restricted container
  * instead of directly on this host. See README.md's "Live scanning"
@@ -57,8 +57,8 @@ const execFileAsync = promisify(execFile);
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const TARGET_RUNTIME_DIR = join(REPO_ROOT, "docker", "target-runtime");
 const NET_HELPER_DIR = join(REPO_ROOT, "docker", "net-helper");
-const TARGET_RUNTIME_IMAGE = "mcpguard-target-runtime:local";
-const NET_HELPER_IMAGE = "mcpguard-net-helper:local";
+const TARGET_RUNTIME_IMAGE = "palar-target-runtime:local";
+const NET_HELPER_IMAGE = "palar-net-helper:local";
 
 /**
  * The container's only nameserver: its own loopback, where nothing listens.
@@ -126,7 +126,7 @@ async function preflightDocker(): Promise<void> {
     await execFileAsync("docker", ["version", "--format", "{{.Server.Version}}"]);
   } catch (err) {
     throw new SandboxError(
-      "mcpguard live requires Docker to sandbox stdio targets, but `docker version` failed " +
+      "palar live requires Docker to sandbox stdio targets, but `docker version` failed " +
         `(${(err as Error).message}). Install Docker and make sure the daemon is running — ` +
         "there is no unsandboxed fallback."
     );
@@ -455,7 +455,7 @@ export interface SweepResult {
  * run's leftovers from a concurrent run's live state — a container left
  * running by Ctrl-C looks exactly like one a healthy concurrent scan is
  * using. Since a running orphan is the single most important thing to
- * reclaim, the sweep takes it. Concurrent `mcpguard live` invocations
+ * reclaim, the sweep takes it. Concurrent `palar live` invocations
  * against one Docker daemon were already unsupported (see README's named
  * gaps); this makes that sharper rather than adding a new limitation.
  */

@@ -1,8 +1,8 @@
 {
-  "name": "mcpguard-vuln-server-fixture",
+  "name": "palar-vuln-server-fixture",
   "private": true,
   "version": "0.1.0",
-  "description": "Intentionally vulnerable MCP server fixture for mcpguard's own test suite. Not published.",
+  "description": "Intentionally vulnerable MCP server fixture for palar's own test suite. Not published.",
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

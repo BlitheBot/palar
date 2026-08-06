@@ -43,7 +43,7 @@ export interface FieldProbeTarget {
 // The same identifier segments IV-001 treats as execution-adjacent
 // (core/config.ts DEFAULT_CONFIG.sensitiveKeywords), split into the two
 // probe styles we know how to craft a real payload for. Fields matching
-// neither subset (custom keywords added via .mcpguardrc.json) fall back to
+// neither subset (custom keywords added via .palarrc.json) fall back to
 // the command-injection style, since a shell-metacharacter payload is the
 // cheaper of the two false-positive-wise: it either fires or is inert.
 const SSRF_KEYWORDS = new Set(["url", "uri", "endpoint"]);
@@ -141,7 +141,7 @@ export function benignValueFor(prop: JSONSchemaProperty | undefined): unknown {
     case "object":
       return {};
     default:
-      return "mcpguard-live-probe";
+      return "palar-live-probe";
   }
 }
 

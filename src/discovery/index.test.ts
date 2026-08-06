@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { discover } from "./index.js";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "mcpguard-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "palar-test-"));
   try {
     await fn(dir);
   } finally {

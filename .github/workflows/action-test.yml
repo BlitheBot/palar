@@ -17,4 +17,4 @@ jobs:
           dir: examples/fixtures
           fail-on: critical
           fail-on-empty: "true"
-          out: mcpguard-report.md
+          out: palar-report.md

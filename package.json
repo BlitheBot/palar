@@ -1,10 +1,10 @@
 {
-  "name": "@blithedale/mcpguard",
+  "name": "palar",
   "version": "0.1.0",
   "description": "Defensive, read-only static analyzer for local MCP tool and server definition files",
   "type": "module",
   "bin": {
-    "mcpguard": "dist/cli/index.js"
+    "palar": "dist/cli/index.js"
   },
   "main": "./dist/cli/index.js",
   "files": [
@@ -14,12 +14,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BlitheBot/MCP.git"
+    "url": "git+https://github.com/BlitheBot/palar.git"
   },
   "bugs": {
-    "url": "https://github.com/BlitheBot/MCP/issues"
+    "url": "https://github.com/BlitheBot/palar/issues"
   },
-  "homepage": "https://github.com/BlitheBot/MCP#readme",
+  "homepage": "https://github.com/BlitheBot/palar#readme",
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build && npm test",

@@ -1,9 +1,9 @@
 // Demo runner for fixtures/vuln-server: starts the intentionally-vulnerable
-// server over stdio to prove it is real and running, then runs MCPGuard's
+// server over stdio to prove it is real and running, then runs Palar's
 // static scan against its definition files. Combined output is written to
 // stdout and to demo/scan-output.log.
 //
-// Note: MCPGuard is a read-only static analyzer — it audits local
+// Note: Palar is a read-only static analyzer — it audits local
 // mcp.tools.json / mcp.server.json files, it does not itself speak MCP to a
 // live server. The stdio smoke test and the static scan are therefore two
 // separate steps below, not one.
@@ -34,7 +34,7 @@ async function smokeTestLiveServer(logHandle) {
     command: process.execPath,
     args: [TSX_CLI, VULN_SERVER_ENTRY],
   });
-  const client = new Client({ name: "mcpguard-demo-client", version: "0.1.0" });
+  const client = new Client({ name: "palar-demo-client", version: "0.1.0" });
   try {
     await client.connect(transport);
     const { tools } = await client.listTools();
@@ -77,7 +77,7 @@ async function main() {
   const logHandle = await open(LOG_PATH, "w");
   try {
     await smokeTestLiveServer(logHandle);
-    await writeSection(logHandle, "2. MCPGuard static scan (mcpguard scan fixtures/vuln-server)");
+    await writeSection(logHandle, "2. Palar static scan (palar scan fixtures/vuln-server)");
     const scanExitCode = await runStaticScan(logHandle);
     await writeSection(logHandle, `done — log written to ${LOG_PATH}`);
     process.exitCode = scanExitCode;

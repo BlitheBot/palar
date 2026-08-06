@@ -1,7 +1,7 @@
-# ⚠️ INTENTIONALLY VULNERABLE — FOR MCPGUARD TESTING ONLY, DO NOT DEPLOY
+# ⚠️ INTENTIONALLY VULNERABLE — FOR PALAR TESTING ONLY, DO NOT DEPLOY
 
 This directory contains a minimal, deliberately-broken MCP server used as a
-test fixture for [MCPGuard](../../README.md). It exists purely so MCPGuard's
+test fixture for [Palar](../../README.md). It exists purely so Palar's
 rules have real, concrete flaws to detect. Do not run it against anything
 other than your own local machine, and never deploy it or expose it to
 untrusted callers.
@@ -11,7 +11,7 @@ untrusted callers.
 - `src/index.ts` — a real, runnable MCP server (stdio transport,
   `@modelcontextprotocol/sdk`) exposing three tools.
 - `mcp.tools.json` / `mcp.server.json` — static definition files mirroring
-  the same tools and network posture, in the format MCPGuard's static
+  the same tools and network posture, in the format Palar's static
   analyzer actually reads (see the note below).
 
 ## The flaws, one line each
@@ -29,17 +29,17 @@ link-local, and RFC1918 addresses.
 
 > **Note:** `sk-FAKEFAKEFAKEFAKEFAKEFAKE1234` is a fake, non-working
 > placeholder — it is not a real OpenAI key and cannot authenticate against
-> anything. It exists solely so MCPGuard's `credential-scanner` rule
+> anything. It exists solely so Palar's `credential-scanner` rule
 > (`CR-003`) has a genuine hardcoded-secret shape to detect in this fixture.
 
 ## Why both a live server and JSON fixture files?
 
-`mcpguard scan` (the original engine) is a **read-only static analyzer**: it
+`palar scan` (the original engine) is a **read-only static analyzer**: it
 globs for local definition files (`mcp.tools.json`, `mcp.server.json`, etc.)
 and audits their declared schemas, descriptions, and network config without
 ever running anything. The JSON files here are what `scan` reads.
 
-`mcpguard live` (see the top-level README's "Live scanning" section) is
+`palar live` (see the top-level README's "Live scanning" section) is
 different: it runs `src/index.ts` for real, inside a Docker container, via
 the `command`/`args` declared in `mcp.server.json`, connects over stdio, and
 sends it crafted input to confirm the flaws above via an out-of-band
@@ -50,8 +50,8 @@ theoretical schema on paper.
 
 ## Running the server directly
 
-This fixture has its own `package.json` (kept independent of mcpguard's own
-dependencies) since `mcpguard live` mounts this directory — and nothing
+This fixture has its own `package.json` (kept independent of palar's own
+dependencies) since `palar live` mounts this directory — and nothing
 above it — read-only into the target's container; install its own
 dependencies first:
 
@@ -64,7 +64,7 @@ node --import tsx src/index.ts
 It speaks MCP over stdio — pair it with an MCP client (or the SDK's
 `StdioClientTransport`) to call its tools directly.
 
-> If you're only ever running it through `mcpguard live` (below), this step
+> If you're only ever running it through `palar live` (below), this step
 > matters even if you don't invoke `node` yourself: `live` still needs
 > `node_modules` to exist here so the container has `@modelcontextprotocol/sdk`
 > and `zod` available at `/target/node_modules`.

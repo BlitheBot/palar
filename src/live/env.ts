@@ -1,9 +1,9 @@
 /**
- * Builds the environment object mcpguard hands to a spawned target's
- * declared env vars. mcpguard itself never spreads `process.env` into
+ * Builds the environment object palar hands to a spawned target's
+ * declared env vars. palar itself never spreads `process.env` into
  * this — only what's explicitly declared on the discovered server config
  * (mcp.server.json's own "env" field, e.g. a value the tool legitimately
- * needs) is passed through, so ambient host credentials in mcpguard's own
+ * needs) is passed through, so ambient host credentials in palar's own
  * process (CI secrets, cloud tokens, etc.) are never handed to a target
  * just because they happened to be in scope.
  *
@@ -20,7 +20,7 @@
  * USERPROFILE, PROGRAMFILES; on POSIX: HOME, LOGNAME, PATH, SHELL, TERM,
  * USER) on top of whatever env object is passed to it, unconditionally.
  * That allowlist holds no secrets, so it's a reasonable baseline, but "no
- * process.env inheritance" would be true of mcpguard's own contribution
+ * process.env inheritance" would be true of palar's own contribution
  * there, not of the resulting child process environment as a whole.
  */
 export function buildCleanEnv(declaredEnv?: Record<string, string>): Record<string, string> {

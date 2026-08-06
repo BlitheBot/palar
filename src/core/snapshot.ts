@@ -61,7 +61,7 @@ function canonicalize(
 ): string {
   if (depth > maxDepth) {
     state.depthExceeded = true;
-    return '"__mcpguard_depth_limit__"';
+    return '"__palar_depth_limit__"';
   }
   if (Array.isArray(value)) {
     return `[${value

@@ -2,7 +2,7 @@
  * Live connector: actually spawns (stdio) or connects to (SSE) a discovered
  * MCP server and speaks the real protocol to it, using
  * @modelcontextprotocol/sdk's Client. This is the piece that did not exist
- * before this module — previously mcpguard only read the JSON files that
+ * before this module — previously palar only read the JSON files that
  * describe a server, never ran one.
  *
  * stdio targets run inside a Docker container (sandbox.ts), not directly
@@ -75,7 +75,7 @@ export async function connectLive(
   // (`--connect-timeout-ms`); note liveScan.ts's overall ceiling preempts
   // this one if it is the smaller of the two.
   const connectTimeoutMs = opts.connectTimeoutMs ?? 30_000;
-  const client = new Client({ name: "mcpguard-live-scanner", version: "0.1.0" });
+  const client = new Client({ name: "palar-live-scanner", version: "0.1.0" });
 
   if (server.transport === "sse") {
     if (!server.url) {

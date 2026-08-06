@@ -1,4 +1,4 @@
-# mcpguard
+# palar
 
 A defensive analyzer for local MCP (Model Context Protocol) tool and server
 definition files, with two distinct modes:
@@ -37,11 +37,11 @@ npm test          # compile + run the test suite (node:test, no extra deps)
 
 Run from source during development with `npm run dev -- <command>`, or via
 the built CLI with `node dist/cli/index.js <command>`. Installing the
-package makes the `mcpguard` binary available directly.
+package makes the `palar` binary available directly.
 
 ## Usage
 
-### `mcpguard scan [paths...]`
+### `palar scan [paths...]`
 
 Discovers definition files, runs every rule, and prints a Markdown audit
 report plus a colored one-line score summary.
@@ -61,24 +61,24 @@ report plus a colored one-line score summary.
   Together these make `scan` usable as a CI gate:
 
   ```sh
-  mcpguard scan --dir ./mcp-configs --fail-on high --fail-on-empty
+  palar scan --dir ./mcp-configs --fail-on high --fail-on-empty
   ```
 
   Use both in CI: `--fail-on` catches dangerous definitions, while
   `--fail-on-empty` catches a moved or misconfigured scan path — which
   should fail loudly, not silently pass as "clean." Pair with
-  `mcpguard drift` to also catch individual definitions disappearing
+  `palar drift` to also catch individual definitions disappearing
   between runs.
 
-### `mcpguard snapshot`
+### `palar snapshot`
 
 Records a baseline of SHA-256 hashes (key-order independent) of every
 discovered tool definition, for later drift detection.
 
 - `--dir <dir...>` — directories to scan
-- `--out <file>` — snapshot file to write (default `.mcpguard-snapshot.json`)
+- `--out <file>` — snapshot file to write (default `.palar-snapshot.json`)
 
-### `mcpguard drift`
+### `palar drift`
 
 Compares current tool definitions against a saved baseline. Snapshots
 store a bounded structural summary per tool (property paths with scalar
@@ -100,18 +100,18 @@ added: new_tool
 
 Exits `1` if anything changed, regressed, or was removed (additions alone
 exit `0`) — suitable as a CI gate against rug-pull style tool
-redefinition. Baselines from older mcpguard versions (hash-only) still
+redefinition. Baselines from older palar versions (hash-only) still
 diff, but degrade to plain `changed` entries without semantic detail —
-re-run `mcpguard snapshot` to upgrade the baseline.
+re-run `palar snapshot` to upgrade the baseline.
 
 - `--dir <dir...>` — directories to scan
-- `--snapshot <file>` — baseline to compare against (default `.mcpguard-snapshot.json`)
+- `--snapshot <file>` — baseline to compare against (default `.palar-snapshot.json`)
 
 > **Windows note:** `--json` output pipes cleanly through Git Bash,
 > PowerShell 7+, and cmd, but Windows PowerShell 5.1 re-encodes piped
 > native output and can mangle the bytes (e.g. prepend a BOM).
 
-## Live scanning (`mcpguard live`) — experimental
+## Live scanning (`palar live`) — experimental
 
 Unlike `scan`, this command actually runs the target: it spawns a
 discovered server's declared `command`/`args` as a real child process over
@@ -122,7 +122,7 @@ unconstrained execution-adjacent field (the same detection IV-001 uses) —
 sends a real crafted payload through a real `callTool()` call.
 
 **Confirmation is via an out-of-band callback, not response text.**
-mcpguard starts a local HTTP listener for the duration of the scan, embeds
+palar starts a local HTTP listener for the duration of the scan, embeds
 a unique per-probe nonce in each payload (a callback URL for SSRF-style
 fields, a shell-metacharacter-appended callback for command-injection-style
 fields), and waits up to `--callback-timeout-ms` (default 4000ms) for a
@@ -136,7 +136,7 @@ are always kept visibly separate in the report — never flattened into one
 list.
 
 ```sh
-mcpguard live fixtures/vuln-server --execute
+palar live fixtures/vuln-server --execute
 ```
 
 `--execute` is required — `live` refuses to run without it, since (unlike
@@ -164,11 +164,11 @@ Per scan:
   Linux capability dropped (`--cap-drop=ALL`), `no-new-privileges`, and
   `--pids-limit`/`--memory`/`--cpus` resource limits;
 - the target's own directory is bind-mounted read-only at `/target` —
-  **not** mcpguard's own source, and nothing above the target's directory;
-  the target's own `node_modules` must exist there already (mcpguard
+  **not** palar's own source, and nothing above the target's directory;
+  the target's own `node_modules` must exist there already (palar
   doesn't install dependencies on your behalf — see
   `fixtures/vuln-server/README.md` for what that means for the fixture);
-  mcpguard builds the container's declared env explicitly (`src/live/env.ts`
+  palar builds the container's declared env explicitly (`src/live/env.ts`
   / `src/live/sandbox.ts`) from exactly `mcp.server.json`'s own `"env"`
   field — no ambient host environment reaches the container;
 - egress is restricted to exactly this scan's own oracle callback
@@ -208,7 +208,7 @@ not a VM and not gVisor — a kernel-level container escape is not mitigated.
 Named gaps, not silently deferred:
 
 - the `DOCKER-USER` and `INPUT` chains are shared, host-global state;
-  concurrent `mcpguard live` invocations against the same Docker daemon
+  concurrent `palar live` invocations against the same Docker daemon
   aren't supported yet (the per-scan chain limits this to two shared
   jump-rule inserts/deletes per scan, but that's still a race, not
   eliminated). The startup sweep sharpens this: it can't tell a crashed
@@ -240,20 +240,20 @@ Named gaps, not silently deferred:
   VPC. Building that is separate, larger work.
 - Tool-poisoning / prompt-injection findings (hidden Unicode instructions in
   a description) have **no oracle-style confirmation** in this mode: the
-  payload targets an LLM's judgment, and mcpguard's live scanner isn't one.
+  payload targets an LLM's judgment, and palar's live scanner isn't one.
   What `live` adds for this class is cross-checking that the poisoned text
   is genuinely served by the running process (`listTools()`), not just
   present in a JSON file that might be stale.
 
 ## GitHub Action
 
-Add MCPGuard to any repository's CI without installing anything — see
+Add Palar to any repository's CI without installing anything — see
 [`action/README.md`](action/README.md) for full input docs:
 
 ```yaml
 steps:
   - uses: actions/checkout@v4
-  - uses: BlitheBot/MCP/action@v1
+  - uses: BlitheBot/palar/action@v1
     with:
       dir: ./mcp-configs
       fail-on: high
@@ -262,7 +262,7 @@ steps:
 
 ## Configuration
 
-All commands accept `--config <path>`, and a `.mcpguardrc.json` in the
+All commands accept `--config <path>`, and a `.palarrc.json` in the
 working directory is picked up automatically. With no config present,
 behavior is identical to the built-in defaults. A malformed config is a
 hard error, never silently ignored. Every field is optional except
@@ -317,7 +317,7 @@ than silently breaking existing files).
 
 ## File discovery
 
-mcpguard finds definitions by naming convention, searching each given path
+palar finds definitions by naming convention, searching each given path
 recursively:
 
 - **Tool definitions:** `mcp.tools.json`, `tools/*.json`, `*.mcp-tools.json`

@@ -1,5 +1,5 @@
 /**
- * Shared types for mcpguard — a read-only static analyzer for local MCP
+ * Shared types for palar — a read-only static analyzer for local MCP
  * tool and server definition files.
  */
 

@@ -1,40 +1,45 @@
-# MCPGuard GitHub Action
+# Palar GitHub Action
 
-Run [MCPGuard](../README.md) — a defensive, read-only static analyzer for
+Run [Palar](../README.md) — a defensive, read-only static analyzer for
 MCP tool and server definition files — in your repository's CI with a few
-lines. The action installs the published `@blithedale/mcpguard` package,
-runs `mcpguard scan`, optionally uploads the Markdown report as a workflow
-artifact, and fails the step when the severity gate trips.
+lines. The action installs the published package, runs a scan, optionally
+uploads the Markdown report as a workflow artifact, and fails the step when
+the severity gate trips.
+
+> **Note:** Palar has not been published to npm under its new name yet, so
+> the action still installs `@blithedale/mcpguard` (the pre-rename package)
+> and invokes its `mcpguard` binary. Both flip to `palar` in one commit once
+> the rename is published — see the `TODO(rename)` markers in `action.yml`.
 
 ## Usage
 
 ```yaml
-name: MCPGuard
+name: Palar
 on: [push, pull_request]
 
 jobs:
-  mcpguard:
+  palar:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: BlitheBot/MCP/action@v1
+      - uses: BlitheBot/palar/action@v1
         with:
           dir: ./mcp-configs
           fail-on: high
           fail-on-empty: "true"
-          out: mcpguard-report.md
+          out: palar-report.md
 ```
 
 ## Inputs
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | `latest` | Version of `@blithedale/mcpguard` to install |
+| `version` | `latest` | Version of `@blithedale/mcpguard` to install (see the note above) |
 | `dir` | `.` | Directory to scan for MCP definition files |
 | `fail-on` | *(unset)* | Fail if any finding is at or above this severity (`critical`, `high`, `medium`, `low`, `info`) |
 | `fail-on-empty` | `"false"` | Fail when no definition files are discovered — recommended in CI |
 | `out` | *(unset)* | Write the Markdown report here and upload it as a workflow artifact |
-| `artifact-name` | `mcpguard-report` | Name for the uploaded artifact |
+| `artifact-name` | `palar-report` | Name for the uploaded artifact |
 
 ## Outputs
 

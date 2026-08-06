@@ -1,5 +1,5 @@
 /**
- * INTENTIONALLY VULNERABLE — FOR MCPGUARD TESTING ONLY, DO NOT DEPLOY.
+ * INTENTIONALLY VULNERABLE — FOR PALAR TESTING ONLY, DO NOT DEPLOY.
  * See ../README.md for the full list of deliberate flaws this server exists
  * to exercise. Every "vulnerability" below is on purpose.
  */
