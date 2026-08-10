@@ -1,0 +1,518 @@
+# Live-scan canary: the ONLY environment that exercises palar's native
+# Linux Docker Engine path end-to-end.
+#
+# src/live/sandbox.ts's header states plainly that Docker Desktop
+# (Windows/WSL2) is the backend its containment claims were measured on, and
+# that the native Linux Engine path is "reasoned-but-unproven". GitHub-hosted
+# ubuntu-latest runners are full VMs running native Docker Engine, so
+# `isDockerDesktop()` returns false here and the untested branch is what
+# executes — with no flags, purely by virtue of where this runs.
+#
+# What makes this a canary rather than a smoke test: a green `palar live` run
+# proves only that the scan completed. The egress firewall is verified by a
+# PAIR of observations that only hold together if netfilter is genuinely
+# discriminating:
+#
+#   - the oracle callback LANDS (container -> host on the ACCEPTed port works), and
+#   - a host listener on a different port is UNREACHABLE from the same container.
+#
+# Either alone is worthless. "Callback landed" with no negative control cannot
+# distinguish a working firewall from no firewall; "connection refused" with no
+# positive control cannot distinguish a working firewall from a container whose
+# networking is simply broken. Together they establish that the sandbox can
+# reach exactly one host port and no other.
+#
+# Ordering guarantee this depends on: liveScan.ts installs the firewall BEFORE
+# connectLive() starts the container, so the sandbox container never exists in
+# an unfirewalled state. Any container the sidecar can find is already fenced.
+
+name: Live-scan canary (native Linux Docker Engine)
+
+on:
+  schedule:
+    # 06:17 UTC daily. Deliberately off the hour: GitHub queues scheduled
+    # workflows heavily at :00 and drops them under load.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NET_HELPER_IMAGE: palar-net-helper:local
+  TARGET_RUNTIME_IMAGE: palar-target-runtime:local
+  # The host port the sandbox must NOT be able to reach. Chosen below Linux's
+  # ephemeral range (32768-60999) on purpose: CallbackOracle binds with
+  # listen(0), so the kernel draws the oracle's real port from that range and
+  # can never collide with this sentinel. A collision would make the negative
+  # control silently test the ACCEPTed port instead.
+  SENTINEL_PORT: "19099"
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # Setup only — no canary assertions live here. palar cannot run at all
+      # without a build, so this necessarily precedes the backend probe.
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Build palar
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      # =====================================================================
+      # 1. BACKEND-AGREEMENT PROBE — the first assertion, and the gate on
+      #    everything after it.
+      # =====================================================================
+      #
+      # Ubuntu 24.04 points `iptables` at the nft backend, and dockerd follows,
+      # so DOCKER-USER lives in the nft-backed filter table. The helper image is
+      # alpine + `apk add iptables`, which has historically defaulted /sbin/iptables
+      # to the legacy xtables binary. If those two disagree the helper is reading
+      # an entirely different rule set: `iptables -N MCPG-<id>` succeeds in legacy,
+      # both `-A` rules succeed, and only the `-I DOCKER-USER` jump fails — which
+      # surfaces downstream as an opaque SandboxError in the middle of a scan.
+      #
+      # Proving the helper can SEE DOCKER-USER first turns that into a named
+      # diagnosis instead of a mystery, and stops the run before any of the later
+      # assertions can be misread as firewall failures.
+      - name: Backend-agreement probe (iptables legacy vs nft)
+        run: |
+          set -euo pipefail
+
+          # Built here rather than in the pre-warm step because the probe cannot
+          # run without it. The pre-warm below then short-circuits on it.
+          docker build -t "$NET_HELPER_IMAGE" docker/net-helper
+
+          set +e
+          OUT="$(docker run --rm --network host \
+            --cap-add=NET_ADMIN --cap-add=NET_RAW \
+            "$NET_HELPER_IMAGE" iptables -S DOCKER-USER 2>&1)"
+          RC=$?
+          set -e
+
+          echo "helper iptables -S DOCKER-USER (rc=$RC):"
+          printf '%s\n' "$OUT"
+
+          if [ "$RC" -ne 0 ] || ! printf '%s\n' "$OUT" | grep -q -- '^-N DOCKER-USER'; then
+            echo "::error title=iptables backend mismatch (legacy vs nft)::The net-helper image cannot see the DOCKER-USER chain."
+            cat >&2 <<'MSG'
+
+          ============================================================
+          FAILURE: iptables backend mismatch (legacy vs nft)
+          ============================================================
+          This is NOT a firewall failure and NOT a permissions failure. The
+          helper container has CAP_NET_ADMIN in the host netns; it simply
+          cannot see the chain dockerd created.
+
+          dockerd created DOCKER-USER using the host's iptables backend.
+          The helper image resolved `iptables` to the OTHER backend, so it is
+          reading a different rule set in which DOCKER-USER does not exist.
+
+          Consequence if this were left unfixed: installFirewall() would create
+          its MCPG-<id> chain and both ACCEPT/REJECT rules in the wrong table,
+          then fail on `-I DOCKER-USER` -- mid-scan, as a generic SandboxError.
+
+          Fix: pin the backend in docker/net-helper/Dockerfile to match the host
+          (install/select iptables-nft rather than legacy xtables). Diagnostics
+          from both sides follow.
+          ============================================================
+
+          MSG
+            echo "--- helper backend ---" >&2
+            docker run --rm "$NET_HELPER_IMAGE" iptables --version >&2 || true
+            docker run --rm "$NET_HELPER_IMAGE" sh -c 'ls -l /sbin/iptables* /usr/sbin/iptables* 2>/dev/null' >&2 || true
+            echo "--- host backend ---" >&2
+            sudo iptables --version >&2 || true
+            sudo update-alternatives --display iptables >&2 || true
+            echo "--- host sees DOCKER-USER as ---" >&2
+            sudo iptables -S DOCKER-USER >&2 || true
+            exit 1
+          fi
+
+          echo "OK: helper and host agree on the iptables backend; DOCKER-USER is visible."
+
+      # =====================================================================
+      # 2. Fixture dependencies.
+      # =====================================================================
+      #
+      # fixtures/vuln-server/node_modules is gitignored and not tracked. The
+      # sandbox bind-mounts the target dir read-only at /target and
+      # target-runtime is a bare node:20-slim with nothing baked in -- tsx and
+      # the MCP SDK come ONLY from the fixture's own node_modules.
+      #
+      # Without this the target cannot start, and the failure presents as a
+      # connect timeout: indistinguishable, from the outside, from the firewall
+      # fault this canary exists to detect.
+      - name: Install fixture dependencies
+        working-directory: fixtures/vuln-server
+        run: |
+          set -euo pipefail
+          npm ci
+          test -x node_modules/.bin/tsx || { echo "::error::tsx missing from fixture node_modules after npm ci"; exit 1; }
+
+      # =====================================================================
+      # 3. Pre-warm both images.
+      # =====================================================================
+      #
+      # runLiveScan() starts its 60s overall deadline BEFORE calling
+      # TargetSandbox.create(), which calls ensureImageBuilt() for both images.
+      # On a cold runner that puts an alpine build and a node:20-slim pull
+      # inside the timed region, alongside a ~9s cold target start.
+      #
+      # Pre-warming moves that variable cost out entirely: ensureImageBuilt()
+      # short-circuits on `docker image inspect`. The canary then runs against
+      # palar's real default budget (60s overall / 30s connect) rather than
+      # against inflated timeouts that would hide a genuine regression.
+      - name: Pre-warm sandbox images
+        run: |
+          set -euo pipefail
+          docker build -t "$TARGET_RUNTIME_IMAGE" docker/target-runtime
+          docker image inspect "$TARGET_RUNTIME_IMAGE" >/dev/null
+          docker image inspect "$NET_HELPER_IMAGE" >/dev/null
+          echo "OK: both images present; ensureImageBuilt() will short-circuit."
+
+      # =====================================================================
+      # 4. Run the scan with a concurrent in-sandbox probe sidecar.
+      # =====================================================================
+      - name: Live scan + in-sandbox probes
+        env:
+          REPORT: ${{ runner.temp }}/live-report.json
+          PROBE_JSON: ${{ runner.temp }}/probe-results.json
+          FOUND_FLAG: ${{ runner.temp }}/container-found
+          SENTINEL_LOG: ${{ runner.temp }}/sentinel.log
+        run: |
+          set -euo pipefail
+
+          # --- the probe script, delivered into the sandbox via the read-only
+          # --- /target mount. .mjs because the fixture's package.json declares
+          # --- "type": "module"; .mjs is unambiguous regardless.
+          # --- Discovery only matches mcp.*.json, so this file is inert to the scan.
+          cat > fixtures/vuln-server/canary-probe.mjs <<'PROBE'
+          import net from "node:net";
+          import dns from "node:dns";
+          import { readFileSync } from "node:fs";
+
+          const sentinelPort = Number(process.argv[2]);
+          const out = {
+            probed: true,
+            hostIp: null,
+            hostListenerReachable: null,
+            dnsResolved: null,
+            notes: [],
+          };
+
+          // sandbox.ts pins host.docker.internal via --add-host, i.e. /etc/hosts.
+          // Reading it directly is the only option that works: the sandbox has no
+          // resolver at all (--dns 127.0.0.1, nothing listening), by design.
+          try {
+            const line = readFileSync("/etc/hosts", "utf8")
+              .split("\n")
+              .find((l) => /\bhost\.docker\.internal\b/.test(l));
+            out.hostIp = line ? line.trim().split(/\s+/)[0] : null;
+          } catch (e) {
+            out.notes.push("hosts:" + e.code);
+          }
+
+          // (a) NEGATIVE CONTROL: the host sentinel listener must be unreachable.
+          // The listener is bound 0.0.0.0 on the host and verified up before the
+          // scan starts, so a failure here can only be the egress firewall.
+          out.hostListenerReachable = await new Promise((resolve) => {
+            if (!out.hostIp) {
+              out.notes.push("no host.docker.internal in /etc/hosts");
+              return resolve(null);
+            }
+            const sock = net.connect({ host: out.hostIp, port: sentinelPort });
+            const finish = (v) => { sock.destroy(); resolve(v); };
+            sock.setTimeout(5000, () => { out.notes.push("tcp:timeout"); finish(false); });
+            sock.once("connect", () => { out.notes.push("tcp:CONNECTED"); finish(true); });
+            sock.once("error", (e) => { out.notes.push("tcp:" + e.code); finish(false); });
+          });
+
+          // (b) DNS must not resolve. BLACKHOLE_DNS points the container at its own
+          // loopback where nothing listens, so ECONNREFUSED is the expected shape.
+          out.dnsResolved = await new Promise((resolve) => {
+            const timer = setTimeout(() => { out.notes.push("dns:timeout"); resolve(null); }, 5000);
+            dns.lookup("example.com", (err, addr) => {
+              clearTimeout(timer);
+              if (err) { out.notes.push("dns:" + err.code); resolve(false); }
+              else { out.notes.push("dns:RESOLVED " + addr); resolve(true); }
+            });
+          });
+
+          console.log(JSON.stringify(out));
+          PROBE
+
+          # --- host sentinel listener -------------------------------------------
+          # Bound 0.0.0.0 so it genuinely listens on the bridge gateway address the
+          # sandbox would reach the host through. If it were bound to loopback only,
+          # probe (a) would "pass" for the wrong reason -- nothing listening rather
+          # than netfilter -- which is exactly the false negative this canary must
+          # not produce.
+          cat > "${RUNNER_TEMP}/sentinel.mjs" <<'SENTINEL'
+          import net from "node:net";
+          const port = Number(process.env.SENTINEL_PORT);
+          net.createServer((s) => s.end("sentinel\n"))
+            .listen(port, "0.0.0.0", () => console.log("sentinel listening on 0.0.0.0:" + port));
+          SENTINEL
+
+          node "${RUNNER_TEMP}/sentinel.mjs" > "$SENTINEL_LOG" 2>&1 &
+          SENTINEL_PID=$!
+          echo "SENTINEL_PID=$SENTINEL_PID" >> "$GITHUB_ENV"
+
+          # Poll (never blind-sleep) until the sentinel is actually accepting, and
+          # PROVE it from the host. An unverified listener makes probe (a) meaningless.
+          for _ in $(seq 1 100); do
+            if node -e '
+              const net=require("net");
+              const s=net.connect({host:"127.0.0.1",port:Number(process.env.SENTINEL_PORT)});
+              s.once("connect",()=>{s.destroy();process.exit(0)});
+              s.once("error",()=>process.exit(1));
+            ' 2>/dev/null; then
+              SENTINEL_UP=1; break
+            fi
+            sleep 0.1
+          done
+          if [ "${SENTINEL_UP:-0}" != "1" ]; then
+            echo "::error title=Sentinel listener never came up::Cannot run the negative control without a verified host listener."
+            cat "$SENTINEL_LOG" || true
+            exit 1
+          fi
+          echo "OK: host sentinel verified listening on 0.0.0.0:${SENTINEL_PORT}"
+
+          # --- probe sidecar -----------------------------------------------------
+          # Polls for the sandbox container by name. This is a bounded poll loop,
+          # NOT a fixed sleep: it never assumes the container exists, and it records
+          # explicitly whether it ever found one. The 0.1s inter-poll delay keeps a
+          # spin loop from stealing CPU from the scan on a 4-core runner.
+          echo "notfound" > "$FOUND_FLAG"
+          (
+            deadline=$(( $(date +%s) + 150 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              name="$(docker ps --filter 'name=^mcpg-' --format '{{.Names}}' | head -n1)"
+              if [ -n "$name" ]; then
+                echo "sidecar: found sandbox container $name" >&2
+                echo "found" > "$FOUND_FLAG"
+                if docker exec "$name" node /target/canary-probe.mjs "$SENTINEL_PORT" \
+                     > "$PROBE_JSON" 2>"${RUNNER_TEMP}/probe-stderr.log"; then
+                  echo "sidecar: probes completed" >&2
+                else
+                  echo "sidecar: docker exec failed" >&2
+                  cat "${RUNNER_TEMP}/probe-stderr.log" >&2 || true
+                fi
+                exit 0
+              fi
+              sleep 0.1
+            done
+            echo "sidecar: deadline reached without ever seeing an mcpg- container" >&2
+          ) &
+          SIDECAR_PID=$!
+
+          # --- the scan ----------------------------------------------------------
+          # Exit code is recorded, never gated on: exit 1 is the EXPECTED outcome
+          # once a probe is CONFIRMED via oracle callback. Gating on it would invert
+          # the assertion -- a canary that fails when the scanner works.
+          set +e
+          node dist/cli/index.js live fixtures/vuln-server \
+            --execute --json --out "$REPORT"
+          LIVE_EXIT=$?
+          set -e
+          echo "palar live exited $LIVE_EXIT (1 is expected when a finding is CONFIRMED)"
+
+          wait "$SIDECAR_PID" || true
+
+          echo "--- container-found flag ---"; cat "$FOUND_FLAG"
+          echo "--- probe results ---"; cat "$PROBE_JSON" 2>/dev/null || echo "(no probe output)"
+
+      # =====================================================================
+      # 5. ASSERT.
+      # =====================================================================
+      - name: Assert firewall containment
+        env:
+          REPORT: ${{ runner.temp }}/live-report.json
+          PROBE_JSON: ${{ runner.temp }}/probe-results.json
+          FOUND_FLAG: ${{ runner.temp }}/container-found
+        run: |
+          set -euo pipefail
+          cat > "${RUNNER_TEMP}/assert.mjs" <<'ASSERT'
+          import { readFileSync, existsSync } from "node:fs";
+
+          const failures = [];
+          const fail = (title, detail) => failures.push({ title, detail });
+
+          // ---- confirmed callbacks ------------------------------------------
+          // Also the POSITIVE control for the firewall: a callback can only land
+          // if the sandbox reached the host on the one ACCEPTed port.
+          let confirmed = 0;
+          if (!existsSync(process.env.REPORT)) {
+            fail(
+              "No live report produced",
+              `palar live wrote no JSON report to ${process.env.REPORT}. The scan did not ` +
+                `complete; every assertion below is therefore indeterminate, not passing.`
+            );
+          } else {
+            const report = JSON.parse(readFileSync(process.env.REPORT, "utf8"));
+            for (const live of report.live ?? []) {
+              confirmed += (live.probes ?? []).filter((p) => p.status === "confirmed").length;
+            }
+            if (confirmed < 1) {
+              fail(
+                "No CONFIRMED oracle callback",
+                `Expected >= 1 probe with status "confirmed", got ${confirmed}. The vuln-server ` +
+                  `fixture is designed to produce one. Either the target never executed the ` +
+                  `probe, or the oracle callback could not reach the host -- on native Linux ` +
+                  `Engine the oracle binds the bridge gateway IP, which is precisely the ` +
+                  `untested path this canary exists to exercise. NOTE: this is also the ` +
+                  `positive control; without it, the "unreachable" results below prove ` +
+                  `nothing, since broken container networking would produce them too.`
+              );
+            }
+          }
+
+          // ---- sidecar actually found the container --------------------------
+          // Evaluated before the probe assertions because it decides whether they
+          // have any evidence at all behind them.
+          const found =
+            existsSync(process.env.FOUND_FLAG) &&
+            readFileSync(process.env.FOUND_FLAG, "utf8").trim() === "found";
+          if (!found) {
+            fail(
+              "Probe sidecar never found the sandbox container",
+              `The sidecar polled for an "mcpg-*" container for its full deadline and never ` +
+                `saw one, so NO in-sandbox probe ran. This is a canary failure, not a pass: ` +
+                `"no violations observed" is not evidence of containment when nothing was ` +
+                `ever observed. Likely causes: the scan died before connectLive(), the ` +
+                `container name prefix changed in sandbox.ts, or the container's lifetime ` +
+                `fell entirely inside the polling interval.`
+            );
+          }
+
+          // ---- in-sandbox probe results --------------------------------------
+          let probe = null;
+          if (existsSync(process.env.PROBE_JSON)) {
+            const raw = readFileSync(process.env.PROBE_JSON, "utf8").trim();
+            if (raw) { try { probe = JSON.parse(raw); } catch { /* reported below */ } }
+          }
+
+          if (!probe) {
+            fail(
+              "No in-sandbox probe results",
+              `The sidecar produced no parseable probe output, so neither the host-reachability ` +
+                `nor the DNS assertion has any evidence behind it. Treated as FAILURE rather ` +
+                `than "nothing observed".`
+            );
+          } else {
+            // Strict === false. null means indeterminate (probe timed out, or
+            // host.docker.internal was absent from /etc/hosts) and must never be
+            // read as "blocked".
+            if (probe.hostListenerReachable !== false) {
+              fail(
+                probe.hostListenerReachable === true
+                  ? "Egress firewall did NOT block the host sentinel port"
+                  : "Host-reachability probe was indeterminate (containment unproven)",
+                `Expected hostListenerReachable === false, got ${JSON.stringify(
+                  probe.hostListenerReachable
+                )}. The sandbox reached (or could not be proven unable to reach) the host ` +
+                  `listener at ${probe.hostIp}:${process.env.SENTINEL_PORT ?? "sentinel"}, a port ` +
+                  `with no ACCEPT rule. If true: the MCPG-<id> REJECT rule is not taking effect ` +
+                  `on this backend -- containment is broken. If null: the probe was ` +
+                  `indeterminate and proved nothing. Probe notes: ${JSON.stringify(probe.notes)}`
+              );
+            }
+            if (probe.dnsResolved !== false) {
+              fail(
+                probe.dnsResolved === true
+                  ? "DNS resolved inside the sandbox"
+                  : "DNS probe was indeterminate (blackhole resolver unproven)",
+                `Expected dnsResolved === false, got ${JSON.stringify(probe.dnsResolved)}. ` +
+                  `The sandbox is configured with --dns 127.0.0.1 (BLACKHOLE_DNS) precisely so ` +
+                  `that no name resolution is possible. If true: the container inherited a ` +
+                  `working resolver, and sandbox.ts's note about Docker's embedded resolver ` +
+                  `forwarding around the egress chains applies to this backend. If null: the ` +
+                  `lookup timed out and proved nothing. Probe notes: ${JSON.stringify(probe.notes)}`
+              );
+            }
+          }
+
+          if (failures.length > 0) {
+            for (const f of failures) {
+              console.log(`::error title=${f.title}::${f.detail.replace(/\n/g, " ")}`);
+              console.error(`\n=== FAILED: ${f.title} ===\n${f.detail}\n`);
+            }
+            console.error(`${failures.length} canary assertion(s) failed.`);
+            process.exit(1);
+          }
+
+          console.log(
+            `OK: ${confirmed} confirmed callback(s); host sentinel unreachable from sandbox; ` +
+              `DNS unresolvable inside sandbox; container found and probed.`
+          );
+          console.log(
+            "Native Linux Docker Engine egress firewall VERIFIED: the sandbox reached the " +
+              "oracle port and nothing else."
+          );
+          ASSERT
+          node "${RUNNER_TEMP}/assert.mjs"
+
+      # =====================================================================
+      # 6. Residue.
+      # =====================================================================
+      #
+      # Runs even when the assertions above failed -- a failed scan is exactly
+      # when teardown is most likely to have been skipped, so this is the run
+      # where residue matters most. Leftover netfilter state is the dangerous
+      # kind: a stray MCPG-* chain wired into host-global DOCKER-USER/INPUT
+      # outlives the scan that created it.
+      - name: Assert zero sandbox residue
+        if: always()
+        run: |
+          set -euo pipefail
+          RESIDUE=0
+
+          CONTAINERS="$(docker ps -a --filter 'name=^mcpg-' --format '{{.Names}}' || true)"
+          if [ -n "$CONTAINERS" ]; then
+            echo "::error title=Residue: sandbox containers survived teardown::$(echo "$CONTAINERS" | tr '\n' ' ')"
+            echo "Leftover containers:"; printf '%s\n' "$CONTAINERS"
+            RESIDUE=1
+          fi
+
+          NETWORKS="$(docker network ls --filter 'name=^mcpg-net-' --format '{{.Name}}' || true)"
+          if [ -n "$NETWORKS" ]; then
+            echo "::error title=Residue: sandbox networks survived teardown::$(echo "$NETWORKS" | tr '\n' ' ')"
+            echo "Leftover networks:"; printf '%s\n' "$NETWORKS"
+            RESIDUE=1
+          fi
+
+          CHAINS="$(docker run --rm --network host --cap-add=NET_ADMIN --cap-add=NET_RAW \
+            "$NET_HELPER_IMAGE" sh -c 'iptables -S 2>/dev/null | grep -- "MCPG-" || true')"
+          if [ -n "$CHAINS" ]; then
+            echo "::error title=Residue: MCPG netfilter state survived teardown::Stray chains or jumps remain in host-global DOCKER-USER/INPUT."
+            echo "Leftover netfilter state:"; printf '%s\n' "$CHAINS"
+            RESIDUE=1
+          fi
+
+          LOCK="${XDG_STATE_HOME:-$HOME/.local/state}/palar/live-scan.lock"
+          if [ -e "$LOCK" ]; then
+            echo "::error title=Residue: live-scan lock file survived::$LOCK still exists; ScanLock.release() did not run."
+            echo "Leftover lock:"; cat "$LOCK" || true
+            RESIDUE=1
+          fi
+
+          if [ "$RESIDUE" -ne 0 ]; then
+            echo "Sandbox residue detected -- teardown is incomplete on this backend."
+            exit 1
+          fi
+          echo "OK: no containers, networks, MCPG netfilter state, or lock file left behind."
+
+      - name: Stop sentinel listener
+        if: always()
+        run: kill "${SENTINEL_PID}" 2>/dev/null || true
