@@ -241,16 +241,26 @@ jobs:
           });
 
           // (b) DNS must not resolve. BLACKHOLE_DNS points the container at its own
-          // loopback where nothing listens, so ECONNREFUSED is the expected shape.
+          // loopback where nothing listens, so the UDP query to 127.0.0.1:53 draws an
+          // immediate ICMP port-unreachable. ECONNREFUSED is therefore the accurate
+          // description at the socket layer, but it is NOT what this probe records:
+          // getaddrinfo() maps that refusal to EAI_AGAIN, so dns:EAI_AGAIN is the
+          // expected note here and ECONNREFUSED will never appear. Do not "fix" this
+          // by looking for ECONNREFUSED -- its absence is normal, not a failure.
           //
-          // Elapsed ms is recorded alongside the result code because sandbox.ts's
+          // Elapsed ms is recorded alongside the code because sandbox.ts's
           // BLACKHOLE_DNS rationale rests on a TIMING claim as well as a failure
           // claim: that pointing at container-local loopback fails instantly rather
-          // than burning ~10s of resolver timeouts per lookup. The failure code alone
-          // cannot distinguish those. Note the 5s cap below bounds what this can
-          // observe -- a lookup slower than that surfaces as dns:timeout@~5000ms and
-          // an indeterminate (null) result, which fails the assertion rather than
-          // silently reporting a fast failure.
+          // than burning ~10s of resolver timeouts per lookup. The code alone cannot
+          // distinguish those -- EAI_AGAIN is also what a genuinely timing-out
+          // resolver returns, which is precisely the failure this needs to rule out.
+          // Measured at 17ms on native Linux Engine, so a fast EAI_AGAIN is the
+          // success shape and a slow one is the regression to watch for.
+          //
+          // Separately, and about this probe rather than the mechanism: the 5s cap
+          // below bounds only what this measurement can observe. A lookup slower than
+          // that surfaces as dns:timeout@~5000ms and an indeterminate (null) result,
+          // which fails the assertion rather than silently reporting a fast failure.
           out.dnsResolved = await new Promise((resolve) => {
             const started = process.hrtime.bigint();
             const elapsedMs = () => {

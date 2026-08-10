@@ -48,7 +48,8 @@
  *     resolve inside the sandbox, and that no container, network, MCPG-*
  *     chain or lock file survives teardown. The latest run measured exactly
  *     that: 1 confirmed callback, sentinel connect refused, DNS lookup
- *     failed, container found and probed, bridge gateway 172.18.0.1.
+ *     failed in 17ms, container found and probed, bridge gateway
+ *     172.18.0.1.
  *   - Docker Desktop (Windows/WSL2): verified by hand as of 2026-07-30
  *     (commit 5ba1a5f, which added the INPUT hook and BLACKHOLE_DNS), not
  *     continuously. The same three observations (host-namespace listener
@@ -106,10 +107,28 @@ const NET_HELPER_IMAGE = "palar-net-helper:local";
  *
  * 127.0.0.1 rather than a reserved/unroutable address on purpose: the
  * query never leaves the container's own netns, so resolution fails
- * instantly with ECONNREFUSED instead of burning ~10s of resolver
- * timeouts per lookup (measured both ways). A target could of course bind
- * its own resolver there and answer itself, which gains it nothing — every
- * address it could resolve to is still REJECTed by the egress chain.
+ * instantly instead of burning ~10s of resolver timeouts per lookup
+ * (measured both ways). The canary measures the fast path directly on
+ * native Linux Engine — 17ms to a failed lookup, against a 5s probe budget.
+ *
+ * Two different error codes describe that one failure, and which one you
+ * see depends on where you look. At the socket layer the UDP datagram to
+ * 127.0.0.1:53 draws an immediate ICMP port-unreachable, i.e. ECONNREFUSED
+ * — that is what makes it fast, and it is why this address was chosen.
+ * But getaddrinfo() does not pass that through: it maps the refusal to
+ * EAI_AGAIN, so EAI_AGAIN is what a target, a log line, or a probe actually
+ * observes. Both are correct; only the second is visible.
+ *
+ * Worth spelling out because the invisible one is the one people search
+ * for: someone debugging a suspected blackhole failure naturally greps for
+ * ECONNREFUSED, finds nothing, and concludes the mitigation isn't working —
+ * when EAI_AGAIN arriving in milliseconds is exactly what success looks
+ * like. A slow EAI_AGAIN is the shape that should worry you, not the code
+ * itself.
+ *
+ * A target could of course bind its own resolver there and answer itself,
+ * which gains it nothing — every address it could resolve to is still
+ * REJECTed by the egress chain.
  *
  * The oracle callback is unaffected: dockerRunArgs() pins
  * host.docker.internal via --add-host (i.e. /etc/hosts), which needs no
