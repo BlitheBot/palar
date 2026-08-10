@@ -1,12 +1,13 @@
 # Live-scan canary: the ONLY environment that exercises palar's native
 # Linux Docker Engine path end-to-end.
 #
-# src/live/sandbox.ts's header states plainly that Docker Desktop
-# (Windows/WSL2) is the backend its containment claims were measured on, and
-# that the native Linux Engine path is "reasoned-but-unproven". GitHub-hosted
-# ubuntu-latest runners are full VMs running native Docker Engine, so
-# `isDockerDesktop()` returns false here and the untested branch is what
-# executes — with no flags, purely by virtue of where this runs.
+# This workflow IS the evidence basis for that path: src/live/sandbox.ts's
+# header and README.md both cite it as what verifies the Linux Engine
+# backend, so a red canary retracts a published claim rather than merely
+# annoying someone. GitHub-hosted ubuntu-latest runners are full VMs running
+# native Docker Engine, so `isDockerDesktop()` returns false here and the
+# Linux branch is what executes — with no flags, purely by virtue of where
+# this runs. Docker Desktop remains hand-measured and is NOT covered here.
 #
 # What makes this a canary rather than a smoke test: a green `palar live` run
 # proves only that the scan completed. The egress firewall is verified by a
@@ -208,6 +209,7 @@ jobs:
             hostIp: null,
             hostListenerReachable: null,
             dnsResolved: null,
+            dnsElapsedMs: null,
             notes: [],
           };
 
@@ -240,12 +242,29 @@ jobs:
 
           // (b) DNS must not resolve. BLACKHOLE_DNS points the container at its own
           // loopback where nothing listens, so ECONNREFUSED is the expected shape.
+          //
+          // Elapsed ms is recorded alongside the result code because sandbox.ts's
+          // BLACKHOLE_DNS rationale rests on a TIMING claim as well as a failure
+          // claim: that pointing at container-local loopback fails instantly rather
+          // than burning ~10s of resolver timeouts per lookup. The failure code alone
+          // cannot distinguish those. Note the 5s cap below bounds what this can
+          // observe -- a lookup slower than that surfaces as dns:timeout@~5000ms and
+          // an indeterminate (null) result, which fails the assertion rather than
+          // silently reporting a fast failure.
           out.dnsResolved = await new Promise((resolve) => {
-            const timer = setTimeout(() => { out.notes.push("dns:timeout"); resolve(null); }, 5000);
+            const started = process.hrtime.bigint();
+            const elapsedMs = () => {
+              out.dnsElapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+              return Math.round(out.dnsElapsedMs);
+            };
+            const timer = setTimeout(() => {
+              out.notes.push("dns:timeout@" + elapsedMs() + "ms");
+              resolve(null);
+            }, 5000);
             dns.lookup("example.com", (err, addr) => {
               clearTimeout(timer);
-              if (err) { out.notes.push("dns:" + err.code); resolve(false); }
-              else { out.notes.push("dns:RESOLVED " + addr); resolve(true); }
+              if (err) { out.notes.push("dns:" + err.code + "@" + elapsedMs() + "ms"); resolve(false); }
+              else { out.notes.push("dns:RESOLVED " + addr + "@" + elapsedMs() + "ms"); resolve(true); }
             });
           });
 
@@ -452,10 +471,20 @@ jobs:
             process.exit(1);
           }
 
+          const dnsMs =
+            probe && typeof probe.dnsElapsedMs === "number"
+              ? `${Math.round(probe.dnsElapsedMs)}ms`
+              : "unrecorded";
           console.log(
             `OK: ${confirmed} confirmed callback(s); host sentinel unreachable from sandbox; ` +
-              `DNS unresolvable inside sandbox; container found and probed.`
+              `DNS unresolvable inside sandbox (failed in ${dnsMs}); container found and probed.`
           );
+          // Reported unconditionally, not asserted on. sandbox.ts's BLACKHOLE_DNS
+          // comment claims loopback-blackholing fails fast instead of burning ~10s of
+          // resolver timeouts; this is the measurement that either backs that claim on
+          // Linux or contradicts it. It is deliberately NOT a pass/fail gate -- slow
+          // failure is a stale-rationale problem, not a containment problem.
+          console.log(`DNS-timing observation (native Linux Engine): ${dnsMs}`);
           console.log(
             "Native Linux Docker Engine egress firewall VERIFIED: the sandbox reached the " +
               "oracle port and nothing else."

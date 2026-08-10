@@ -242,15 +242,38 @@ Named gaps, not silently deferred:
   lock file written on another host is detected by hostname and refused
   rather than guessed at, but that only covers a *shared state directory*
   (a roamed or network-mounted home), not a shared daemon;
-- **verified against Docker Desktop (Windows/WSL2)** — that's the backend
-  the containment claims were actually measured on, by dumping live
-  netfilter state mid-scan and probing the sandbox from a second shell
-  (host-namespace listener unreachable, DNS resolution failing, oracle
-  callback still landing). The native Linux Docker Engine path is
-  implemented from documented Docker/netfilter behavior but is **not**
-  verified end-to-end; nftables-only hosts, where the `iptables` shim may
-  not apply these rules as written, are untested. Re-run those checks
-  before trusting either;
+- **both Docker backends have been measured end-to-end, but not with the
+  same freshness or the same coverage.** Native Linux Docker Engine is
+  verified continuously by
+  [`.github/workflows/canary.yml`](.github/workflows/canary.yml), which runs
+  daily on a GitHub-hosted `ubuntu-latest` runner — a full VM on native
+  Engine, so the Linux branch is what executes there. It asserts a *pair* of
+  results that only hold together if the firewall genuinely discriminates:
+  the oracle callback lands (the sandbox reached the host on the one
+  ACCEPTed port) while a host listener verified up on a separate sentinel
+  port is unreachable from that same container. It also asserts DNS does not
+  resolve inside the sandbox, and that no container, network, `MCPG-*` chain
+  or lock file survives teardown. Docker Desktop (Windows/WSL2) was measured
+  by hand — same three observations, by dumping live netfilter state
+  mid-scan and probing from a second shell — but **as of 2026-07-30, with
+  nothing re-checking it since**; that date is the age of the evidence, and
+  it only gets older. What the canary does *not* cover: it exercises one host
+  netfilter configuration (Ubuntu 24.04, where `iptables` is the nft-backed
+  shim and dockerd follows it). Hosts that resolve `iptables` to the legacy
+  backend, or that have no iptables compatibility layer at all — where these
+  rules may not apply as written — remain untested; re-run those checks
+  before trusting the sandbox there;
+- **Docker Desktop's verification is structurally manual and will age.**
+  This is a standing limitation, not a task someone has yet to get to: no
+  hosted CI runner offers Docker Desktop as a backend. GitHub's runners are
+  native-Engine VMs — which is precisely why the canary exercises the Linux
+  path — and Docker Desktop's licensing and nested-virtualization
+  requirements rule out installing it on one. So the containment claims for
+  the backend that leans hardest on Docker-Desktop-specific machinery
+  (`host.docker.internal`, the internal host-proxy IP resolved per scan)
+  rest on a hand-run measurement that nothing can automatically refresh.
+  Assume that evidence is as old as the date above, and re-measure by hand
+  if you need it current;
 - the oracle callback listener has no rate-limiting or body-size cap;
 - resource limits are best-effort hardening against fork-bombing/resource
   exhaustion, not a hard guarantee on par with a VM boundary;

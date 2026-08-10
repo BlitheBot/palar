@@ -32,17 +32,50 @@
  *     address of its own rather than relying on that magic value.
  *
  * Verification status, stated honestly because it's the whole basis for
- * trusting the containment claims: **Docker Desktop (Windows/WSL2) is the
- * backend actually exercised end-to-end here.** The egress firewall was
- * verified empirically on it by dumping live netfilter state mid-scan and
- * probing from a second shell — confirming that a host-namespace listener
- * is unreachable from the sandbox, that DNS resolution fails, and that the
- * oracle callback still lands. The native Linux Engine path is implemented
- * from documented Docker/netfilter behavior and is *not* verified
- * end-to-end here; nftables-only hosts (where the `iptables` shim may not
- * apply these rules as written) are likewise untested. Treat the Linux
- * Engine path as reasoned-but-unproven, and re-run the same checks there
- * before relying on it.
+ * trusting the containment claims. Both backends have now been exercised
+ * end-to-end, but by different means and with different freshness:
+ *
+ *   - Native Linux Engine: verified continuously by
+ *     .github/workflows/canary.yml, which runs daily on a GitHub-hosted
+ *     ubuntu-latest runner — a full VM on native Docker Engine, so
+ *     isDockerDesktop() returns false and this is the branch that actually
+ *     executes there. It asserts a *pair* of results that only hold
+ *     together if netfilter is genuinely discriminating: the oracle
+ *     callback lands (positive control — the sandbox reached the host on
+ *     the one ACCEPTed port) while a host listener verified up on a
+ *     sentinel port is unreachable from that same container (negative
+ *     control). Either alone proves nothing. It also asserts DNS does not
+ *     resolve inside the sandbox, and that no container, network, MCPG-*
+ *     chain or lock file survives teardown. The latest run measured exactly
+ *     that: 1 confirmed callback, sentinel connect refused, DNS lookup
+ *     failed, container found and probed, bridge gateway 172.18.0.1.
+ *   - Docker Desktop (Windows/WSL2): verified by hand as of 2026-07-30
+ *     (commit 5ba1a5f, which added the INPUT hook and BLACKHOLE_DNS), not
+ *     continuously. The same three observations (host-namespace listener
+ *     unreachable, DNS resolution failing, oracle callback still landing)
+ *     were made empirically by dumping live netfilter state mid-scan and
+ *     probing from a second shell. That date is the age of the evidence:
+ *     nothing has re-checked it since, and nothing will on its own.
+ *
+ * That asymmetry is structural, not an unfinished chore. Docker Desktop
+ * cannot get an equivalent canary because no hosted CI runner offers that
+ * backend — GitHub's are native-Engine VMs, which is exactly why the canary
+ * exercises the Linux path — and Docker Desktop's licence and its
+ * VM-in-a-VM requirements rule out installing it on one. So the backend
+ * whose containment depends on the most Docker-Desktop-specific machinery
+ * (host.docker.internal, the host-proxy IP resolved in
+ * resolveDockerDesktopHostProxyIp) is the one whose verification can only
+ * ever be re-established by hand, and it ages from the date above until
+ * someone does.
+ *
+ * What the canary does NOT establish: it exercises exactly one host
+ * netfilter configuration — Ubuntu 24.04, where `iptables` is the nft-backed
+ * shim and dockerd follows it. Its backend-agreement probe proves the
+ * net-helper image and the host agree on that one distro; it says nothing
+ * about hosts that resolve `iptables` to the legacy backend, or about hosts
+ * with no iptables compatibility layer at all, where these rules may not
+ * apply as written. Re-run the same checks before relying on the sandbox
+ * there.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
