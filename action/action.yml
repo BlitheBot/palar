@@ -12,10 +12,23 @@ inputs:
   version:
     description: >-
       Version of @blithedale/mcpguard to install (any npm version or
-      dist-tag). TODO: flip to `palar` once palar is published to npm —
-      see the install step below.
+      dist-tag). Ignored when `binary` is set. TODO: flip to `palar` once
+      palar is published to npm — see the install step below.
     required: false
     default: latest
+  binary:
+    description: >-
+      An already-built palar executable to run instead of installing from
+      npm — either an absolute path or a name on PATH. When set, the install
+      step is skipped entirely and `version` is ignored.
+
+      This exists so this repository's own self-test can exercise the build
+      from the checkout rather than the last published release: without it,
+      a green self-test would say nothing about the code being tested.
+      Consumers of the action should leave it unset and take the published
+      package.
+    required: false
+    default: ""
   dir:
     description: Directory to scan for MCP definition files.
     required: false
@@ -55,9 +68,11 @@ runs:
     # TODO(rename): Palar still installs and invokes its pre-rename package
     # and binary name. @blithedale/mcpguard@0.1.0 is the only published
     # release, and it ships its bin as `mcpguard`, so both the install target
-    # below and the `mcpguard` invocation in the scan step must flip together
+    # below and the `mcpguard` fallback in the scan step must flip together
     # — once `palar` is published, change them to `palar` in one commit.
+    # (The `binary` input bypasses both: it names the executable outright.)
     - name: Install palar
+      if: inputs.binary == ''
       shell: bash
       run: npm install -g "@blithedale/mcpguard@${{ inputs.version }}"
 
@@ -65,11 +80,23 @@ runs:
       id: scan
       shell: bash
       env:
+        INPUT_BINARY: ${{ inputs.binary }}
         INPUT_DIR: ${{ inputs.dir }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_FAIL_ON_EMPTY: ${{ inputs.fail-on-empty }}
         INPUT_OUT: ${{ inputs.out }}
       run: |
+        # Resolve the executable BEFORE `set +e`, so a bad `binary` input
+        # fails this step outright instead of being laundered into the
+        # scan's exit code — a missing binary is a misconfiguration, not a
+        # gate trip, and the two must not be reported the same way.
+        # TODO(rename): flip `mcpguard` to `palar` with the install target above.
+        bin="${INPUT_BINARY:-mcpguard}"
+        if [ -n "$INPUT_BINARY" ] && ! command -v "$INPUT_BINARY" >/dev/null 2>&1; then
+          echo "::error title=palar binary not found::binary input '$INPUT_BINARY' is not an executable file or a command on PATH"
+          exit 1
+        fi
+
         set +e
         args=(scan --dir "$INPUT_DIR")
         if [ -n "$INPUT_FAIL_ON" ]; then
@@ -81,8 +108,7 @@ runs:
         if [ -n "$INPUT_OUT" ]; then
           args+=(--out "$INPUT_OUT")
         fi
-        # TODO(rename): flip to `palar` together with the install target above.
-        mcpguard "${args[@]}"
+        "$bin" "${args[@]}"
         echo "exit-code=$?" >> "$GITHUB_OUTPUT"
 
     - name: Upload report artifact

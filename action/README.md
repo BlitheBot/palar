@@ -34,7 +34,8 @@ jobs:
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | `latest` | Version of `@blithedale/mcpguard` to install (see the note above) |
+| `version` | `latest` | Version of `@blithedale/mcpguard` to install (see the note above); ignored when `binary` is set |
+| `binary` | *(unset)* | Run an already-built palar executable instead of installing from npm. Leave unset — see below |
 | `dir` | `.` | Directory to scan for MCP definition files |
 | `fail-on` | *(unset)* | Fail if any finding is at or above this severity (`critical`, `high`, `medium`, `low`, `info`) |
 | `fail-on-empty` | `"false"` | Fail when no definition files are discovered — recommended in CI |
@@ -49,6 +50,12 @@ jobs:
 
 ## Behavior notes
 
+- `binary` exists for this repository's own self-test
+  (`.github/workflows/action-test.yml`), which has to scan with the build
+  from the checkout rather than the last published release — otherwise a
+  green self-test would say nothing about the code it is meant to be
+  testing. When it is set the npm install is skipped entirely. Consumers
+  should leave it unset and take the published package.
 - The report artifact uploads **even when the scan fails** — the exit code
   is captured, the artifact is uploaded, and only then is the failure
   re-raised, so you always get the report for a failing run.

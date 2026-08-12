@@ -1,3 +1,30 @@
+# Action self-test: proves ./action still works against the code in THIS
+# checkout.
+#
+# Two properties this workflow has to hold onto, both of which it previously
+# got wrong:
+#
+# 1. It must scan with the LOCAL build. Installing the published package
+#    would test @blithedale/mcpguard@latest — a frozen release that has no
+#    relationship to the checkout — so the workflow could stay green through
+#    any regression in src/. The build below feeds ./action its own binary
+#    via the `binary` input; the npm path stays in action.yml for real
+#    consumers, and is simply not what this workflow exercises.
+#
+# 2. The expected outcome is FAILURE. examples/fixtures exists to be
+#    vulnerable, so `--fail-on critical` tripping is the scanner working.
+#    Letting that exit code fail the job (the old `fail-on: critical` with no
+#    assertion) made the self-test unpassable by construction. It is captured
+#    and asserted on instead — and, crucially, the inverse is a failure too:
+#    a clean scan of these fixtures means the scanner went blind, which is
+#    the regression most worth catching here.
+#
+# Assertion 3 below is what keeps assertion 1 honest. "The action step
+# failed" is NOT sufficient evidence that the gate tripped — a missing
+# binary, a moved fixture path or a crashed scan all fail the step too. The
+# report contents are what distinguish "failed for the right reason" from
+# "failed", so a missing report is treated as indeterminate, i.e. failure.
+
 name: Action self-test
 
 on:
@@ -5,16 +32,295 @@ on:
     paths:
       - "action/**"
       - ".github/workflows/action-test.yml"
+      # The self-test now runs the local build, so anything that changes what
+      # that build finds must be able to turn it red. Without these, a rule
+      # regression in src/ would sail past the one workflow that scans real
+      # vulnerable fixtures end-to-end.
+      - "src/**"
+      - "examples/fixtures/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test-action:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: ./action
+
+      - uses: actions/setup-node@v5
         with:
+          node-version: 24
+          cache: npm
+
+      - name: Build palar from the checkout
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          # tsc preserves the `#!/usr/bin/env node` shebang but not an exec
+          # bit, and the action invokes the binary directly rather than
+          # through `node`. Asserted rather than assumed: without +x the
+          # action would fail with a bare 127 at scan time.
+          chmod +x dist/cli/index.js
+          test -x dist/cli/index.js
+
+      - name: Run the action against the vulnerable fixtures
+        id: scan
+        # Expected to fail: see the header. The failure is the assertion's
+        # input, not the job's verdict.
+        continue-on-error: true
+        uses: ./action
+        with:
+          binary: ${{ github.workspace }}/dist/cli/index.js
           dir: examples/fixtures
           fail-on: critical
           fail-on-empty: "true"
           out: palar-report.md
+
+      - name: Assert the gate tripped on the expected findings
+        env:
+          # steps.scan.outcome is the pre-continue-on-error result, i.e. what
+          # the action actually did. Used in preference to the action's
+          # exit-code output because the runner guarantees it even though the
+          # composite's final step is the one that fails.
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+          # Not asserted on — read only by the probe at the top of the script,
+          # which exists to find out whether it survives that failing step.
+          SCAN_EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+          REPORT: ${{ github.workspace }}/palar-report.md
+        run: |
+          set -euo pipefail
+
+          # Printed unconditionally, and the only reason SCAN_EXIT_CODE is
+          # plumbed in at all: it settles, on the first real run, whether a
+          # composite action still maps its declared outputs when its final
+          # step fails. Nothing below reads it yet.
+          #
+          # TODO: if this prints `exit-code = 1` rather than `<unset/empty>`,
+          # tighten the gate assertion in assert.mjs from
+          #   process.env.SCAN_OUTCOME !== "failure"
+          # to
+          #   process.env.SCAN_EXIT_CODE !== "1"
+          # and delete this probe. That is the strictly better check: outcome
+          # only says the action failed, which a missing binary or a crashed
+          # scan also produce, whereas exit-code == 1 says palar itself ran
+          # and exited 1 — the severity gate, and nothing else.
+          echo "=== composite-output probe ==="
+          echo "steps.scan.outcome           = ${SCAN_OUTCOME}"
+          echo "steps.scan.outputs.exit-code = ${SCAN_EXIT_CODE:-<unset/empty>}"
+          echo "==============================="
+
+          cat > "${RUNNER_TEMP}/assert.mjs" <<'ASSERT'
+          import { readFileSync, existsSync } from "node:fs";
+
+          const failures = [];
+          const fail = (title, detail) => failures.push({ title, detail });
+
+          // The pinned expectation for examples/fixtures: 5 findings — 2
+          // critical, 3 high — across 2 tools and 1 server.
+          //
+          // This is a SNAPSHOT and behaves like one. A new rule that fires on
+          // these fixtures WILL trip it, by design: the counts cannot tell
+          // "someone added a rule" from "a rule started firing on its own",
+          // and the second is worth a human look. The diagnostics below name
+          // which of the two they think happened and what to do about it, so
+          // updating this list is a deliberate edit rather than a puzzle.
+          const EXPECTED = [
+            ["CRITICAL", "NB-003"], // loopback host exposed — the critical the gate trips on
+            ["CRITICAL", "TS-002"], // bidi override controls in a tool description
+            ["HIGH", "IV-001"], // unconstrained exec-adjacent string
+            ["HIGH", "NB-001"], // no egress filter declared
+            ["HIGH", "NB-004"], // private-network host exposed
+          ];
+          const EXPECTED_TOOLS = "2";
+          const EXPECTED_SERVERS = "1";
+
+          // ---- 1. the gate must have tripped -------------------------------
+          // examples/fixtures carries two critical findings by design, so
+          // `--fail-on critical` exiting non-zero is the scanner working. A
+          // passing step here means either the gate stopped firing or the
+          // fixtures stopped being vulnerable; both are regressions.
+          if (process.env.SCAN_OUTCOME !== "failure") {
+            fail(
+              "Action did not fail on deliberately vulnerable fixtures",
+              `Expected the action step to fail (palar exit 1) with ` +
+                `--fail-on critical against examples/fixtures, but its outcome was ` +
+                `"${process.env.SCAN_OUTCOME}". Those fixtures contain two critical ` +
+                `findings on purpose. A clean scan of them is not a pass -- it means ` +
+                `the severity gate, the rules behind it, or the fixtures themselves ` +
+                `stopped working.`
+            );
+          }
+
+          // ---- 2. the report must exist ------------------------------------
+          // Sole evidence that a scan ran at all. Without it, assertion 1 is
+          // satisfied by anything that fails the step -- a missing binary
+          // (exit 127), a moved --dir, a crash -- so "no report" is recorded
+          // as indeterminate, never as a pass.
+          const path = process.env.REPORT;
+          if (!existsSync(path)) {
+            fail(
+              "No report produced",
+              `The action wrote no Markdown report to ${path}, so the scan did not ` +
+                `complete and NOTHING below could be checked. Note this also ` +
+                `invalidates the "action failed" assertion above: a scan that never ` +
+                `ran fails the step for reasons that have nothing to do with the ` +
+                `severity gate.`
+            );
+            report(failures);
+          }
+          const md = readFileSync(path, "utf8");
+
+          // ---- 3. the findings, as a set diff ------------------------------
+          // Compared as a set rather than as a total, because "5 findings, got
+          // 6" is a mystery and "NB-005 appeared, nothing vanished" is not.
+          // A rule going quiet, a rule changing severity, a rule firing twice
+          // and a NEW rule firing are four different events with four
+          // different responses — the last of which is usually not a bug —
+          // so each gets its own diagnostic instead of a single count.
+          const actual = [...md.matchAll(/^### \[([A-Z]+)\] ([A-Z]+-\d+):/gm)].map(
+            (m) => [m[1], m[2]]
+          );
+          const actualSeverity = new Map(actual.map(([sev, id]) => [id, sev]));
+          const occurrences = new Map();
+          for (const [, id] of actual) {
+            occurrences.set(id, (occurrences.get(id) ?? 0) + 1);
+          }
+          const expectedIds = new Set(EXPECTED.map(([, id]) => id));
+
+          // (a) VANISHED / CHANGED / DUPLICATED — the regressions.
+          for (const [severity, ruleId] of EXPECTED) {
+            const got = actualSeverity.get(ruleId);
+            const sev = severity.toLowerCase();
+            if (got === undefined) {
+              fail(
+                `Expected finding VANISHED: ${ruleId} (${sev})`,
+                `examples/fixtures should produce ${ruleId} at ${sev} severity and the ` +
+                  `report has no "[${severity}] ${ruleId}" heading at all. THIS IS THE ` +
+                  `REGRESSION THIS SELF-TEST EXISTS TO CATCH: the fixtures are checked in ` +
+                  `and unchanged, so a rule that used to fire on them and now does not has ` +
+                  `gone blind. Do NOT resolve this by deleting ${ruleId} from EXPECTED in ` +
+                  `.github/workflows/action-test.yml unless the rule was deliberately ` +
+                  `retired — in which case say so in the commit message.`
+              );
+            } else if (got !== severity) {
+              fail(
+                `Severity CHANGED: ${ruleId} ${sev} -> ${got.toLowerCase()}`,
+                `${ruleId} still fires, but at ${got.toLowerCase()} severity instead of ` +
+                  `${sev}. If this was intentional, update ${ruleId}'s entry in EXPECTED in ` +
+                  `.github/workflows/action-test.yml. Note the blast radius before you do: ` +
+                  `a critical dropping below critical also changes which findings trip ` +
+                  `--fail-on critical for every consumer of the action, not just this test.`
+              );
+            }
+            const n = occurrences.get(ruleId) ?? 0;
+            if (n > 1) {
+              fail(
+                `Finding DUPLICATED: ${ruleId} fired ${n} times`,
+                `${ruleId} appears ${n} times in the report; the fixtures are built to ` +
+                  `trigger it exactly once. Either a fixture grew a second violation (edit ` +
+                  `EXPECTED and say so) or the rule is double-reporting one violation, ` +
+                  `which is a bug in the rule.`
+              );
+            }
+          }
+
+          // (b) NEW — usually intentional, and worded so it reads that way.
+          const reportedNew = new Set();
+          for (const [severity, ruleId] of actual) {
+            if (expectedIds.has(ruleId) || reportedNew.has(ruleId)) continue;
+            reportedNew.add(ruleId);
+            fail(
+              `NEW finding appeared: ${ruleId} (${severity.toLowerCase()})`,
+              `examples/fixtures produced ${ruleId} at ${severity.toLowerCase()} severity, ` +
+                `which is not in this self-test's expected set. THIS IS PROBABLY NOT A BUG. ` +
+                `The expected set is a pinned snapshot, so any newly added rule that fires ` +
+                `on these fixtures trips it on purpose — that is the friction, and it is ` +
+                `intentional. If you just added ${ruleId} and it should fire here, add ` +
+                `["${severity}", "${ruleId}"] to EXPECTED in ` +
+                `.github/workflows/action-test.yml in the SAME commit as the rule. Only ` +
+                `investigate further if you were not expecting a new finding at all: a rule ` +
+                `nobody touched starting to fire means it changed behavior.`
+            );
+          }
+
+          // ---- 4. the summary table must agree with the body ---------------
+          // Checked against the findings actually rendered, NOT against
+          // EXPECTED. That is the point: a new or missing rule moves both
+          // sides together, so this never piles a second, redundant error on
+          // top of the precise one above. It fires only when the report's own
+          // summary contradicts its own findings — a renderer bug.
+          const bodyCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+          for (const [severity] of actual) bodyCounts[severity.toLowerCase()]++;
+          for (const [severity, count] of Object.entries(bodyCounts)) {
+            const m = md.match(new RegExp(`^\\| ${severity} \\| (\\d+) \\|$`, "m"));
+            const tabled = m ? m[1] : null;
+            if (tabled !== String(count)) {
+              fail(
+                `Report contradicts itself on ${severity} count`,
+                `The severity table says ${severity} = ` +
+                  `${tabled === null ? "(no such row — report format changed?)" : tabled}, ` +
+                  `but the report body contains ${count} ${severity} finding heading(s). ` +
+                  `This is a renderMarkdownReport bug, not a scanner one: the summary and ` +
+                  `the findings it summarizes disagree.`
+              );
+            }
+          }
+
+          // ---- 5. discovery counts -----------------------------------------
+          const expectLine = (label, re, expected) => {
+            const m = md.match(re);
+            const actualValue = m ? m[1] : null;
+            if (actualValue !== expected) {
+              fail(
+                `Unexpected ${label}`,
+                `Expected ${label} to be ${expected}, got ` +
+                  `${actualValue === null ? "no match at all (report format changed?)" : actualValue}. ` +
+                  `The fixture tree is checked in and fixed, so this count is fixed too: a ` +
+                  `change means discovery stopped matching a file, or a fixture was added, ` +
+                  `moved or renamed.`
+              );
+            }
+          };
+          expectLine("tools scanned", /^- \*\*Tools scanned:\*\* (\d+)$/m, EXPECTED_TOOLS);
+          expectLine("servers scanned", /^- \*\*Servers scanned:\*\* (\d+)$/m, EXPECTED_SERVERS);
+
+          report(failures, actual);
+
+          function report(failures, actual) {
+            // Printed on both paths: on failure it is the context that turns
+            // each diagnostic above into a diff you can read at a glance.
+            if (actual) {
+              console.log(
+                `expected: ${EXPECTED.map(([s, r]) => `${r}(${s.toLowerCase()})`).join(", ")}`
+              );
+              console.log(
+                `actual:   ${
+                  actual.length > 0
+                    ? actual.map(([s, r]) => `${r}(${s.toLowerCase()})`).join(", ")
+                    : "(none)"
+                }`
+              );
+            }
+            if (failures.length > 0) {
+              for (const f of failures) {
+                console.log(`::error title=${f.title}::${f.detail.replace(/\n/g, " ")}`);
+                console.error(`\n=== FAILED: ${f.title} ===\n${f.detail}\n`);
+              }
+              console.error(`${failures.length} self-test assertion(s) failed.`);
+              process.exit(1);
+            }
+            console.log(
+              `OK: action ran the locally built palar, tripped --fail-on critical as ` +
+                `designed, and reported exactly the ${EXPECTED.length} expected findings ` +
+                `across ${EXPECTED_TOOLS} tool(s) and ${EXPECTED_SERVERS} server(s).`
+            );
+            process.exit(0);
+          }
+          ASSERT
+          node "${RUNNER_TEMP}/assert.mjs"
