@@ -317,16 +317,23 @@ jobs:
             console.log(
               `action: exit-code=${exitCode || "<unset/empty>"} outcome=${outcome}`
             );
+            // Both sides sorted, for display only -- the comparison above is a
+            // set diff and stays one, because report order is not a contract.
+            // Rendering two identical sets as two different-looking lines made
+            // a green log read like a red one; sorting means a visible
+            // difference in these lines is always a real difference.
+            // Deliberately sorts the rendered tokens, not the ids: a severity
+            // change moves `NB-003(critical)` to `NB-003(high)` in place, and
+            // duplicates survive, so a double-fired rule still shows up twice.
+            const render = (pairs) =>
+              pairs
+                .map(([s, r]) => `${r}(${s.toLowerCase()})`)
+                .sort()
+                .join(", ");
             if (actual) {
+              console.log(`expected: ${render(EXPECTED)}`);
               console.log(
-                `expected: ${EXPECTED.map(([s, r]) => `${r}(${s.toLowerCase()})`).join(", ")}`
-              );
-              console.log(
-                `actual:   ${
-                  actual.length > 0
-                    ? actual.map(([s, r]) => `${r}(${s.toLowerCase()})`).join(", ")
-                    : "(none)"
-                }`
+                `actual:   ${actual.length > 0 ? render(actual) : "(none)"}`
               );
             }
             if (failures.length > 0) {
