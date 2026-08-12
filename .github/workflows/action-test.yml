@@ -19,11 +19,19 @@
 #    a clean scan of these fixtures means the scanner went blind, which is
 #    the regression most worth catching here.
 #
-# Assertion 3 below is what keeps assertion 1 honest. "The action step
-# failed" is NOT sufficient evidence that the gate tripped — a missing
-# binary, a moved fixture path or a crashed scan all fail the step too. The
-# report contents are what distinguish "failed for the right reason" from
-# "failed", so a missing report is treated as indeterminate, i.e. failure.
+# Assertion 1 keys off the action's exit-code output rather than the step's
+# outcome, because "the step failed" is NOT evidence the gate tripped — a
+# missing binary (127) or a crashed scan fail it just as readily. exit-code
+# == 1 says palar itself ran and the severity gate is what stopped it.
+# (Composite actions do still map their declared outputs when their final
+# step fails; measured on a real run, not assumed.) The outcome is still
+# reported alongside: when exit-code is anything other than 1, it is what
+# says whether the action failed or errored.
+#
+# Assertion 3 keeps that honest at the findings level. Exit 1 says two
+# criticals exist, not WHICH — so the report contents are what distinguish
+# "gated on the findings we expect" from "gated on something". A missing
+# report is treated as indeterminate, i.e. failure.
 
 name: Action self-test
 
@@ -84,36 +92,17 @@ jobs:
 
       - name: Assert the gate tripped on the expected findings
         env:
-          # steps.scan.outcome is the pre-continue-on-error result, i.e. what
-          # the action actually did. Used in preference to the action's
-          # exit-code output because the runner guarantees it even though the
-          # composite's final step is the one that fails.
-          SCAN_OUTCOME: ${{ steps.scan.outcome }}
-          # Not asserted on — read only by the probe at the top of the script,
-          # which exists to find out whether it survives that failing step.
+          # The gate assertion. Measured to survive the composite's failing
+          # final step, so this is populated even though the action fails.
           SCAN_EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+          # Not asserted on — carried purely as diagnostic context. When
+          # exit-code is anything other than 1, the step outcome is what says
+          # whether the action failed or errored, which is what distinguishes
+          # a blind scanner from a scan that never ran.
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
           REPORT: ${{ github.workspace }}/palar-report.md
         run: |
           set -euo pipefail
-
-          # Printed unconditionally, and the only reason SCAN_EXIT_CODE is
-          # plumbed in at all: it settles, on the first real run, whether a
-          # composite action still maps its declared outputs when its final
-          # step fails. Nothing below reads it yet.
-          #
-          # TODO: if this prints `exit-code = 1` rather than `<unset/empty>`,
-          # tighten the gate assertion in assert.mjs from
-          #   process.env.SCAN_OUTCOME !== "failure"
-          # to
-          #   process.env.SCAN_EXIT_CODE !== "1"
-          # and delete this probe. That is the strictly better check: outcome
-          # only says the action failed, which a missing binary or a crashed
-          # scan also produce, whereas exit-code == 1 says palar itself ran
-          # and exited 1 — the severity gate, and nothing else.
-          echo "=== composite-output probe ==="
-          echo "steps.scan.outcome           = ${SCAN_OUTCOME}"
-          echo "steps.scan.outputs.exit-code = ${SCAN_EXIT_CODE:-<unset/empty>}"
-          echo "==============================="
 
           cat > "${RUNNER_TEMP}/assert.mjs" <<'ASSERT'
           import { readFileSync, existsSync } from "node:fs";
@@ -142,35 +131,63 @@ jobs:
 
           // ---- 1. the gate must have tripped -------------------------------
           // examples/fixtures carries two critical findings by design, so
-          // `--fail-on critical` exiting non-zero is the scanner working. A
-          // passing step here means either the gate stopped firing or the
-          // fixtures stopped being vulnerable; both are regressions.
-          if (process.env.SCAN_OUTCOME !== "failure") {
+          // palar exiting 1 under `--fail-on critical` is the scanner working.
+          //
+          // Keyed to the action's exit-code output rather than to the step's
+          // outcome: outcome only says the action failed, which a missing
+          // binary (127) or a crashed scan produce just as readily, whereas
+          // exit-code == 1 says palar itself ran and the severity gate is what
+          // stopped it.
+          const exitCode = process.env.SCAN_EXIT_CODE || "";
+          const outcome = process.env.SCAN_OUTCOME;
+          if (exitCode !== "1") {
             fail(
-              "Action did not fail on deliberately vulnerable fixtures",
-              `Expected the action step to fail (palar exit 1) with ` +
-                `--fail-on critical against examples/fixtures, but its outcome was ` +
-                `"${process.env.SCAN_OUTCOME}". Those fixtures contain two critical ` +
-                `findings on purpose. A clean scan of them is not a pass -- it means ` +
-                `the severity gate, the rules behind it, or the fixtures themselves ` +
-                `stopped working.`
+              `Severity gate did not trip: exit-code=${exitCode || "<unset/empty>"}`,
+              `Expected the action to report exit-code 1 from --fail-on critical against ` +
+                `examples/fixtures, which contain two critical findings on purpose. Got ` +
+                `exit-code "${exitCode || "<unset/empty>"}" with step outcome "${outcome}". ` +
+                `Read the pair together -- it is what identifies which failure this is:\n` +
+                `  0 / success  -> the scan ran clean. THE SCANNER WENT BLIND, or the ` +
+                `fixtures were defanged. This is the regression this self-test exists for.\n` +
+                `  127 / failure -> the binary was never found; the scan did not run, and ` +
+                `nothing here is a statement about the rules.\n` +
+                `  other / failure -> palar ran and died. Check the scan step's log.\n` +
+                `  <empty> / failure -> the action failed BEFORE the scan step recorded an ` +
+                `exit code, e.g. the binary-resolution guard in action.yml rejected the ` +
+                `binary input.\n` +
+                `  1 / success -> handled separately, just below.`
+            );
+          } else if (outcome !== "failure") {
+            // The one case the pair check above cannot reach, and the worst
+            // one: palar gated correctly and the action swallowed it. Every
+            // consumer's build would go green on critical findings, which is
+            // the entire thing the action promises not to do.
+            fail(
+              `Gate tripped but the action did not fail: outcome=${outcome}`,
+              `The scan reported exit-code 1, so the severity gate DID trip, but the ` +
+                `action step's outcome was "${outcome}" instead of "failure". The gate is ` +
+                `therefore not being re-raised to the caller: every consumer running this ` +
+                `action would see a green build with critical findings in it. Look at the ` +
+                `"Propagate scan exit code" step in action/action.yml -- it is what turns a ` +
+                `captured exit code back into a failed step, and it is not doing so.`
             );
           }
 
           // ---- 2. the report must exist ------------------------------------
-          // Sole evidence that a scan ran at all. Without it, assertion 1 is
-          // satisfied by anything that fails the step -- a missing binary
-          // (exit 127), a moved --dir, a crash -- so "no report" is recorded
-          // as indeterminate, never as a pass.
+          // With the gate pinned to exit-code == 1, a missing report no longer
+          // means "the scan never ran" -- exit 1 already proves palar ran and
+          // gated. It means --out did not produce the file it promises, which
+          // is its own bug AND leaves every finding assertion below with
+          // nothing to read. Recorded as indeterminate, never as a pass.
           const path = process.env.REPORT;
           if (!existsSync(path)) {
             fail(
               "No report produced",
-              `The action wrote no Markdown report to ${path}, so the scan did not ` +
-                `complete and NOTHING below could be checked. Note this also ` +
-                `invalidates the "action failed" assertion above: a scan that never ` +
-                `ran fails the step for reasons that have nothing to do with the ` +
-                `severity gate.`
+              `The action wrote no Markdown report to ${path}. Nothing below could be ` +
+                `checked, so the findings are UNVERIFIED rather than correct -- the gate ` +
+                `tripping tells us two criticals exist, not which. If exit-code was 1, the ` +
+                `scan itself ran: look at the --out path and the upload-artifact step ` +
+                `rather than at the rules.`
             );
             report(failures);
           }
@@ -295,6 +312,11 @@ jobs:
           function report(failures, actual) {
             // Printed on both paths: on failure it is the context that turns
             // each diagnostic above into a diff you can read at a glance.
+            // The outcome rides along with the exit code because the two are
+            // only meaningful as a pair — see assertion 1.
+            console.log(
+              `action: exit-code=${exitCode || "<unset/empty>"} outcome=${outcome}`
+            );
             if (actual) {
               console.log(
                 `expected: ${EXPECTED.map(([s, r]) => `${r}(${s.toLowerCase()})`).join(", ")}`
