@@ -1,6 +1,6 @@
 {
   "name": "palar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Defensive, read-only static analyzer for local MCP tool and server definition files",
   "type": "module",
   "bin": {
@@ -10,7 +10,10 @@
   "files": [
     "dist",
     "!dist/**/*.test.*",
-    "docker"
+    "!dist/**/*.map",
+    "docker",
+    "README.md",
+    "LICENSE"
   ],
   "repository": {
     "type": "git",
