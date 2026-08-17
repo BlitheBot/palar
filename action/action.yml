@@ -11,11 +11,13 @@ branding:
 inputs:
   version:
     description: >-
-      Version of @blithedale/mcpguard to install (any npm version or
-      dist-tag). Ignored when `binary` is set. TODO: flip to `palar` once
-      palar is published to npm — see the install step below.
+      Version of palar to install (any npm version or dist-tag). Ignored
+      when `binary` is set. Pinned to an exact version by default: a CI
+      gate that can change its verdict without a change in this repository
+      is not a gate. Override it to float (`^0.2.0`, `latest`) if you
+      would rather pick up new releases automatically.
     required: false
-    default: latest
+    default: "0.2.0"
   binary:
     description: >-
       An already-built palar executable to run instead of installing from
@@ -65,16 +67,10 @@ outputs:
 runs:
   using: composite
   steps:
-    # TODO(rename): Palar still installs and invokes its pre-rename package
-    # and binary name. @blithedale/mcpguard@0.1.0 is the only published
-    # release, and it ships its bin as `mcpguard`, so both the install target
-    # below and the `mcpguard` fallback in the scan step must flip together
-    # — once `palar` is published, change them to `palar` in one commit.
-    # (The `binary` input bypasses both: it names the executable outright.)
     - name: Install palar
       if: inputs.binary == ''
       shell: bash
-      run: npm install -g "@blithedale/mcpguard@${{ inputs.version }}"
+      run: npm install -g "palar@${{ inputs.version }}"
 
     - name: Run palar scan
       id: scan
@@ -90,8 +86,7 @@ runs:
         # fails this step outright instead of being laundered into the
         # scan's exit code — a missing binary is a misconfiguration, not a
         # gate trip, and the two must not be reported the same way.
-        # TODO(rename): flip `mcpguard` to `palar` with the install target above.
-        bin="${INPUT_BINARY:-mcpguard}"
+        bin="${INPUT_BINARY:-palar}"
         if [ -n "$INPUT_BINARY" ] && ! command -v "$INPUT_BINARY" >/dev/null 2>&1; then
           echo "::error title=palar binary not found::binary input '$INPUT_BINARY' is not an executable file or a command on PATH"
           exit 1
