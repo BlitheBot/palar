@@ -96,7 +96,14 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   },
   severityOverrides: {},
   description: {
-    maxLength: 1000,
+    // 4000 chars is ~1000 tokens for ONE tool description — above the 95th
+    // percentile of real-world MCP tools measured across six published
+    // servers (p50=149, p75=458, p90=2186, p95=3701). The previous 1000
+    // flagged 18% of real tools, including a 1020-char description that
+    // overshot by 2%, on the premise that length hides injected
+    // instructions — a premise DH-002 and the TS-* rules already test
+    // directly and far better. Configurable via description.maxLength.
+    maxLength: 4000,
     injectionKeywords: [
       "ignore previous instructions",
       "ignore all previous instructions",

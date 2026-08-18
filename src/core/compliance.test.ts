@@ -116,6 +116,18 @@ const MAPPINGS: Array<{
       ),
   },
   {
+    // DH-001 is pinned SEPARATELY and deliberately does not cite Tool
+    // Poisoning: it reports that a description is long, which is not evidence
+    // of injected instructions. DH-002 and the TS-* rules test for those.
+    label: "description-hygiene DH-001",
+    refs: ["palar:context-budget"],
+    run: () =>
+      descriptionHygieneRule.check(
+        { name: "t", description: "x".repeat(4100) } as unknown as MCPToolDefinition,
+        ruleCtx
+      ),
+  },
+  {
     label: "text-sanitizer",
     refs: ["OWASP MCP03:2025 - Tool Poisoning"],
     run: () =>
@@ -159,8 +171,15 @@ for (const { label, refs, run } of MAPPINGS) {
 test("network-bounds stays an internal category, not an OWASP citation", () => {
   // No OWASP MCP Top 10 entry covers SSRF; an "OWASP" ref here would claim an
   // alignment that does not exist.
+  //
+  // The fixture DECLARES a posture: a bare { name } declares nothing about
+  // egress and now correctly produces no findings at all, so it can no longer
+  // serve as the fixture for a compliance-reference assertion.
   const findings = networkBoundsRule.check(
-    { name: "srv" } as unknown as MCPServerConfig,
+    {
+      name: "srv",
+      network: { egressFilterEnabled: false, exposedHosts: ["127.0.0.1", "10.0.0.5"] },
+    } as unknown as MCPServerConfig,
     ruleCtx
   );
   assert.ok(findings.length > 0);

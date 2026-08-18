@@ -11,19 +11,40 @@ const ruleIds = (server: unknown) => check(server).map((f) => f.ruleId);
 // A network block that satisfies the filter rules, for isolating host checks.
 const filtered = { egressFilterEnabled: true, egressAllowlist: ["api.example.com"] };
 
-test("missing network block produces NB-001", () => {
-  assert.deepEqual(ruleIds({ name: "srv" }), ["NB-001"]);
+test("missing network block produces NOTHING — absent is not disabled", () => {
+  // network.egressFilterEnabled is palar's own manifest key, absent from
+  // every real MCP server. Firing on its absence reported the absence of
+  // palar metadata at high severity on 100% of real servers.
+  assert.deepEqual(ruleIds({ name: "srv" }), []);
 });
 
-test("egressFilterEnabled false produces NB-001", () => {
+test("egressFilterEnabled explicitly false produces NB-001 — a stated claim", () => {
   assert.deepEqual(
     ruleIds({ name: "srv", network: { egressFilterEnabled: false } }),
     ["NB-001"]
   );
 });
 
-test("empty network object produces NB-001", () => {
-  assert.deepEqual(ruleIds({ name: "srv", network: {} }), ["NB-001"]);
+test("empty network object produces nothing — it declares no egress posture", () => {
+  assert.deepEqual(ruleIds({ name: "srv", network: {} }), []);
+});
+
+test("a network block declaring only exposedHosts does not imply egress is off", () => {
+  // Partial posture: the author declared hosts but said nothing about
+  // filtering. Silence about egress is still not a claim that egress is
+  // unbounded, so NB-001 stays quiet while NB-004 evaluates what WAS stated.
+  assert.deepEqual(
+    ruleIds({ name: "srv", network: { exposedHosts: ["10.0.0.5"] } }),
+    ["NB-004"]
+  );
+});
+
+test("NB-002/003/004 never fire on an absent declaration", () => {
+  // The companion guarantee to NB-001's fix: no NB rule reports on silence.
+  assert.deepEqual(ruleIds({ name: "srv" }), []);
+  assert.deepEqual(ruleIds({ name: "srv", network: {} }), []);
+  assert.deepEqual(ruleIds({ name: "srv", network: { exposedHosts: [] } }), []);
+  assert.deepEqual(ruleIds({ name: "srv", network: { egressAllowlist: [] } }), []);
 });
 
 test("filter enabled with missing allowlist produces NB-002, not NB-001", () => {

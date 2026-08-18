@@ -1,7 +1,19 @@
 /**
- * NB: audits a server's declared network posture — whether egress filtering
- * is explicitly enabled and backed by an allowlist, and whether any exposed
- * host points at loopback or private/link-local address space.
+ * NB: audits a server's DECLARED network posture — whether a declared egress
+ * filter is switched off or unbacked by an allowlist, and whether any declared
+ * exposed host points at loopback or private/link-local address space.
+ *
+ * Every rule here evaluates a value the manifest actually states. None fires
+ * on the absence of a declaration, and that is deliberate: "absent" and
+ * "disabled" are different claims, and only the second is a property of the
+ * server. `network.egressFilterEnabled` is palar's own manifest key — it is
+ * not part of the MCP specification, so no real-world server ships it. A rule
+ * keyed on its absence reports the absence of palar metadata and fires on
+ * 100% of real servers, which is zero information at high severity. It also
+ * misreads the dominant case: a stdio server has no listening socket, and
+ * what it may dial out to is a property of the process's runtime environment,
+ * not of its manifest — which is exactly why `palar live` enforces egress
+ * with iptables rather than by reading a declaration.
  */
 import type { Finding, MCPServerConfig } from "../core/types.js";
 import type { RuleContext, ServerRule } from "./index.js";
@@ -48,16 +60,21 @@ export const networkBoundsRule: ServerRule = {
     const basePath = `servers["${server.name}"].network`;
     const network = server.network;
 
-    if (network?.egressFilterEnabled !== true) {
+    // Fires ONLY on an explicit `false` — a stated claim that egress is
+    // unbounded. A missing `network` block, or a `network` block that simply
+    // does not mention egressFilterEnabled, declares nothing about egress and
+    // is therefore nothing to evaluate; see this module's docstring for why
+    // treating that silence as a high-severity finding was wrong.
+    if (network !== undefined && network.egressFilterEnabled === false) {
       findings.push({
         ruleId: "NB-001",
         pillar: "network-boundaries",
         severity: "high",
-        title: `Server "${server.name}" declares no egress filter`,
+        title: `Server "${server.name}" declares egress filtering disabled`,
         detail:
-          `Server "${server.name}" does not set network.egressFilterEnabled to ` +
-          `true, so nothing in its configuration bounds where it may make ` +
-          `outbound connections.`,
+          `Server "${server.name}" explicitly sets network.egressFilterEnabled ` +
+          `to false, so its own configuration states that nothing bounds where ` +
+          `it may make outbound connections.`,
         location: { file: ctx.file, jsonPath: `${basePath}.egressFilterEnabled` },
         remediation:
           `Set network.egressFilterEnabled to true and pair it with an ` +
@@ -65,8 +82,8 @@ export const networkBoundsRule: ServerRule = {
         complianceRefs: [...COMPLIANCE_REFS],
       });
     } else if (
-      !Array.isArray(network.egressAllowlist) ||
-      network.egressAllowlist.length === 0
+      network?.egressFilterEnabled === true &&
+      (!Array.isArray(network.egressAllowlist) || network.egressAllowlist.length === 0)
     ) {
       findings.push({
         ruleId: "NB-002",

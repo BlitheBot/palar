@@ -1,15 +1,33 @@
 /**
- * DH: lexical hygiene of tool descriptions — oversized descriptions that
- * can stuff a model's context, phrases heuristically associated with
- * prompt injection, and missing or placeholder descriptions that leave a
- * reviewer nothing to review. Distinct from text-sanitizer, which detects
- * individual suspicious code points.
+ * DH: lexical hygiene of tool descriptions — descriptions long enough to eat
+ * a real share of the model's context budget, phrases heuristically
+ * associated with prompt injection, and missing or placeholder descriptions
+ * that leave a reviewer nothing to review. Distinct from text-sanitizer,
+ * which detects individual suspicious code points.
+ *
+ * Only DH-002 makes a claim about prompt injection. DH-001 is a size
+ * observation and says so; see CONTEXT_BUDGET_REFS below for why it no
+ * longer cites OWASP Tool Poisoning.
  */
 import type { Finding, MCPToolDefinition } from "../core/types.js";
 import type { RuleContext, ToolRule } from "./index.js";
 import { DEFAULT_CONFIG } from "../core/config.js";
 
 const COMPLIANCE_REFS = ["OWASP MCP03:2025 - Tool Poisoning"];
+
+/**
+ * DH-001 deliberately does NOT carry the Tool Poisoning citation the other
+ * DH rules do. Length is not evidence of poisoning: a long description is
+ * overwhelmingly just a complex tool documented thoroughly, and the actual
+ * poisoning signal — instruction-like phrasing, hidden code points — is what
+ * DH-002 and the TS-* rules detect directly. Citing MCP03 for "this text is
+ * long" claims an alignment the evidence does not support, the same reason
+ * network-bounds.ts uses "palar:SSRF" instead of an OWASP ID. What is left
+ * once poisoning is removed is a real but much smaller concern: a single
+ * description can eat a disproportionate share of the model's context
+ * budget, so this is filed as its own internal category.
+ */
+const CONTEXT_BUDGET_REFS = ["palar:context-budget"];
 
 /** Single generic words that describe nothing. */
 const GENERIC_PLACEHOLDERS = new Set([
@@ -43,18 +61,22 @@ export const descriptionHygieneRule: ToolRule = {
       findings.push({
         ruleId: "DH-001",
         pillar: "text-sanitization",
-        severity: "medium",
-        title: `Oversized description on tool "${tool.name}"`,
+        severity: "low",
+        title: `Very long description on tool "${tool.name}"`,
         detail:
           `Tool "${tool.name}" has a ${description.length}-character ` +
-          `description (limit: ${settings.maxLength}). Very long descriptions ` +
-          `are a context-stuffing vector: they consume model context and give ` +
-          `injected instructions room to hide.`,
+          `description (limit: ${settings.maxLength}), roughly ` +
+          `${Math.round(description.length / 4)} tokens of context spent before ` +
+          `the tool is even called. That is a context-budget observation, not ` +
+          `evidence of anything hidden in the text: length alone does not ` +
+          `indicate injected instructions, and DH-002 and the TS-* rules test ` +
+          `for those directly. Complex tools legitimately need long descriptions.`,
         location: { file: ctx.file, jsonPath },
         remediation:
-          `Trim the description to what a caller needs to choose and use the ` +
-          `tool; move reference material to documentation.`,
-        complianceRefs: [...COMPLIANCE_REFS],
+          `Only if context budget matters to you: trim the description to what ` +
+          `a caller needs in order to choose and use the tool, and move ` +
+          `reference material to documentation.`,
+        complianceRefs: [...CONTEXT_BUDGET_REFS],
       });
     }
 

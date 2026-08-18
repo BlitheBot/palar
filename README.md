@@ -24,7 +24,7 @@ definition files, with two distinct modes:
 | --- | --- | --- |
 | `schema-integrity` | IV-001, IV-002 | Execution-adjacent string inputs (`command`, `path`, `url`, `sql`, …) with no `pattern`/`enum`/`format` constraint; sensitive-named tools with no input schema at all |
 | `text-sanitization` | TS-001…TS-005 | Hidden Unicode in tool names/descriptions: zero-width characters, bidi override controls, tag characters, stray variation selectors, non-printable controls — reported by code point, never echoed |
-| `network-boundaries` | NB-001…NB-004 | Missing egress filtering, filters with no allowlist, and exposed hosts pointing at loopback or private/link-local address space (including the cloud metadata range) |
+| `network-boundaries` | NB-001…NB-004 | Egress filtering explicitly declared off, filters with no allowlist, and exposed hosts pointing at loopback or private/link-local address space (including the cloud metadata range). These evaluate declared values only — a manifest that declares no network posture produces no network findings |
 | `credential-exposure` | CR-001…CR-006 | Hardcoded credentials anywhere in a definition file's string values: AWS access keys, API key/token/secret literals, OpenAI-style keys, Slack tokens, bearer tokens, and PEM private-key headers — matched secrets are redacted to `first4...last2` in the report |
 
 ## Install & build
