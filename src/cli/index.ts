@@ -8,6 +8,7 @@ import type { ResolvedConfig } from "../core/config.js";
 import { DEFAULT_LIMITS, loadConfigFile } from "../core/config.js";
 import { discover } from "../discovery/index.js";
 import { runAudit } from "../core/auditor.js";
+import { VERSION } from "../core/version.js";
 import {
   renderMarkdownReport,
   SEVERITY_ORDER,
@@ -88,7 +89,7 @@ program
   .description(
     "Read-only static analyzer for local MCP tool and server definition files"
   )
-  .version("0.1.0");
+  .version(VERSION);
 
 addLimitOptions(
   program
