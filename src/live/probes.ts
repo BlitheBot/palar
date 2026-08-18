@@ -109,16 +109,21 @@ export function detectPoisonedDescription(
 }
 
 /**
- * Platform-aware shell payload: appends a callback request after the
- * legitimate value using the metacharacter the host's default shell for
- * child_process.exec() honors ("&" for cmd.exe on Windows, ";" for
- * /bin/sh elsewhere) so the callback fires regardless of what the
- * original command does with the base value.
+ * POSIX shell payload: appends a callback request after the legitimate
+ * value with ";" (sh command separator) so the callback fires regardless
+ * of what the original command does with the base value.
+ *
+ * Always POSIX, deliberately not keyed on process.platform. The payload
+ * never runs on PALAR's host: a stdio target executes it inside the Linux
+ * node:20-slim sandbox container (see sandbox.ts / docker/target-runtime),
+ * and an SSE target executes it on a remote host whose OS PALAR cannot
+ * observe. PALAR's own platform is therefore never the shell that runs
+ * this string — branching on it emitted cmd.exe syntax (curl.exe, "&"
+ * which backgrounds instead of chaining, ">NUL") into a shell that has
+ * never been cmd.exe, which is exactly why the oracle could not confirm
+ * command injection from a Windows host.
  */
 export function buildCommandInjectionPayload(baseValue: string, callbackUrl: string): string {
-  if (process.platform === "win32") {
-    return `${baseValue} & curl.exe -s -m 3 "${callbackUrl}" >NUL 2>&1`;
-  }
   return `${baseValue}; curl -s -m 3 "${callbackUrl}" >/dev/null 2>&1 || true`;
 }
 

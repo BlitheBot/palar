@@ -88,13 +88,16 @@ test("a clean description produces no poisoning hit", () => {
   assert.equal(detectPoisonedDescription(tool), null);
 });
 
-test("command-injection payload uses the platform's shell metacharacter", () => {
+test("command-injection payload always uses POSIX shell syntax, regardless of host platform", () => {
+  // The payload runs in the Linux sandbox container (stdio) or on a remote
+  // host (SSE) — never on PALAR's host — so it must be POSIX on every host,
+  // including Windows. It must never emit cmd.exe syntax (curl.exe, " & ",
+  // ">NUL").
   const payload = buildCommandInjectionPayload("127.0.0.1", "http://127.0.0.1:9999/cb/x");
-  if (process.platform === "win32") {
-    assert.match(payload, /^127\.0\.0\.1 & curl\.exe /);
-  } else {
-    assert.match(payload, /^127\.0\.0\.1; curl /);
-  }
+  assert.match(payload, /^127\.0\.0\.1; curl -s /);
+  assert.doesNotMatch(payload, /curl\.exe/);
+  assert.doesNotMatch(payload, />NUL/);
+  assert.doesNotMatch(payload, / & /);
   assert.ok(payload.includes("http://127.0.0.1:9999/cb/x"));
 });
 
