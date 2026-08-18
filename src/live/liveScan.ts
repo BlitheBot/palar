@@ -32,6 +32,7 @@
  * (nothing is spawned) and only the overall timeout applies.
  */
 import { CallbackOracle } from "./oracle.js";
+import { resolveProbeStatus } from "./status.js";
 import { connectLive, type LiveConnection } from "./connector.js";
 import { TargetSandbox } from "./sandbox.js";
 import {
@@ -131,7 +132,7 @@ async function runOneProbe(
     reason: target.reason,
     payload,
     nonce,
-    status: callback ? "confirmed" : "unconfirmed",
+    status: resolveProbeStatus(callback, toolCall),
     callback,
     callbackTimeoutMs,
     toolCall,

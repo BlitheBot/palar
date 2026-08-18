@@ -3,9 +3,19 @@
  * AuditResult for display purposes only — the static Finding[] array
  * itself is never mutated (see types.ts docstring for why).
  *
- * The whole point of this pass: CONFIRMED, ATTEMPTED-UNCONFIRMED, and
- * STATIC-ONLY are kept as visibly separate sections, never flattened back
- * into one undifferentiated finding list.
+ * The whole point of this pass: CONFIRMED, ATTEMPTED-REJECTED,
+ * ATTEMPTED-UNCONFIRMED, and STATIC-ONLY are kept as visibly separate
+ * sections, never flattened back into one undifferentiated finding list.
+ *
+ * REJECTED is a provenance label, not a verdict (see status.ts): the probe
+ * ran, the target answered, and the answer was an error result. It does not
+ * downgrade the finding's severity and it does not remove the finding --
+ * severity belongs to the static analyzer and is left alone. Because the
+ * same isError flag covers an argument-validation bounce, a handler-level
+ * refusal, AND a successful injection whose command exited nonzero, this
+ * renderer prints the target's own response text verbatim next to the
+ * status rather than classifying it: the reader distinguishes those cases
+ * from the evidence, and palar does not guess on their behalf.
  */
 import type { AuditResult, Finding } from "../core/types.js";
 import type { LiveAuditResult, LiveProbeResult, PoisoningLiveCheck } from "./types.js";
@@ -27,9 +37,15 @@ function formatCodePoint(cp: number): string {
   return `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
 }
 
+const PROBE_LABELS: Record<LiveProbeResult["status"], string> = {
+  confirmed: "CONFIRMED",
+  rejected: "ATTEMPTED — REJECTED BY TARGET",
+  unconfirmed: "ATTEMPTED — UNCONFIRMED",
+};
+
 function renderProbe(p: LiveProbeResult): string {
   const lines: string[] = [];
-  const label = p.status === "confirmed" ? "CONFIRMED" : "ATTEMPTED — UNCONFIRMED";
+  const label = PROBE_LABELS[p.status];
   lines.push(`#### [${label}] ${p.toolName}.${p.fieldPath} (${p.kind})`);
   lines.push("");
   lines.push(`- **Why probed:** ${p.reason}`);
@@ -45,11 +61,30 @@ function renderProbe(p: LiveProbeResult): string {
   if ("error" in call) {
     lines.push(`- **Tool call:** failed — ${call.error}`);
   } else {
-    lines.push(
-      `- **Tool call response${call.isError ? " (isError=true)" : ""}:** ${call.textPreview || "(empty)"}`
-    );
+    const heading =
+      p.status === "rejected"
+        ? "Rejected with (isError=true)"
+        : `Tool call response${call.isError ? " (isError=true)" : ""}`;
+    lines.push(`- **${heading}:** ${call.textPreview || "(empty)"}`);
   }
-  if (p.status !== "confirmed") {
+  if (p.status === "rejected") {
+    lines.push("");
+    lines.push(
+      "  The target returned an error result for this payload, quoted verbatim above. That " +
+        "is NOT proof the tool is safe: it rejected THIS ONE input, which says nothing about " +
+        "any other input. The severity of the corresponding static finding is deliberately " +
+        "left unchanged."
+    );
+    lines.push("");
+    lines.push(
+      "  Read the response text to tell these apart — the status alone cannot, and palar " +
+        "does not guess: (1) input validation rejected the payload; (2) argument/schema " +
+        "validation bounced the call before the tool's handler ever ran; (3) the handler ran " +
+        "and refused for an unrelated reason; (4) the injected command RAN and exited " +
+        "nonzero. Case (4) is evidence FOR injection, and it reaches this section only when " +
+        "no callback arrived to prove it — had one arrived, this would read CONFIRMED."
+    );
+  } else if (p.status === "unconfirmed") {
     lines.push("");
     lines.push(
       "  No callback does not mean safe — it can also mean the payload failed for an " +
@@ -147,6 +182,7 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   }
 
   const confirmed = live.probes.filter((p) => p.status === "confirmed");
+  const rejected = live.probes.filter((p) => p.status === "rejected");
   const unconfirmed = live.probes.filter((p) => p.status === "unconfirmed");
 
   lines.push("## CONFIRMED — oracle callback received");
@@ -176,11 +212,39 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
     }
   }
 
+  lines.push("## ATTEMPTED — REJECTED BY TARGET");
+  lines.push("");
+  lines.push(
+    `${rejected.length} probe(s) that the target ANSWERED WITH AN ERROR. The probe really ran ` +
+      `and the server really replied — this section never contains a tool that was not reached, ` +
+      `because a probe that never ran produces no entry at all and its static finding stays in ` +
+      `STATIC-ONLY below.`
+  );
+  lines.push("");
+  lines.push(
+    `This is NOT a clean bill of health and no severity was changed on account of it. The ` +
+      `target refused these specific payloads; it may well accept others. Each entry quotes ` +
+      `the target's own error text, which is the only thing that distinguishes an ` +
+      `argument-validation bounce from a handler-level refusal — and from an injected command ` +
+      `that ran and exited nonzero.`
+  );
+  lines.push("");
+  if (rejected.length === 0) {
+    lines.push("None.");
+    lines.push("");
+  } else {
+    for (const p of rejected) {
+      lines.push(renderProbe(p));
+      lines.push("");
+    }
+  }
+
   lines.push("## ATTEMPTED — UNCONFIRMED");
   lines.push("");
   lines.push(
-    `${unconfirmed.length} probe(s) sent to the live tool with no callback observed within the ` +
-      `timeout. This is NOT the same as "safe" — see each entry's caveat.`
+    `${unconfirmed.length} probe(s) sent to the live tool that produced no callback within the ` +
+      `timeout AND no error result — the target accepted the payload and simply said nothing ` +
+      `back. This is NOT the same as "safe" — see each entry's caveat.`
   );
   lines.push("");
   if (unconfirmed.length === 0) {

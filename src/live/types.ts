@@ -7,7 +7,13 @@
 import type { CallbackEvent } from "./oracle.js";
 import type { ProbeKind } from "./probes.js";
 
-export type ProbeStatus = "confirmed" | "unconfirmed";
+/**
+ * Outcome of a single probe. See status.ts for the strict resolution
+ * order and, in particular, for why "rejected" is not a claim that the
+ * target is safe (it spans four different situations, one of which is a
+ * successful injection) and must never downgrade or suppress a finding.
+ */
+export type ProbeStatus = "confirmed" | "rejected" | "unconfirmed";
 
 export interface ToolCallCapture {
   isError?: boolean;
