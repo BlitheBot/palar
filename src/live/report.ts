@@ -176,7 +176,71 @@ function renderPoisoning(check: PoisoningLiveCheck): string {
   return lines.join("\n");
 }
 
+/**
+ * The whole report for a target palar never spoke to.
+ *
+ * Deliberately NOT the ordinary report with empty sections. The ordinary
+ * report's shape is a claim in itself — a page of "CONFIRMED: None.",
+ * "REJECTED: None.", "UNCONFIRMED: None." reads as a target that was
+ * exercised and came back clean, which is the exact opposite of what
+ * happened. So the sections that would be empty are not printed at all, and
+ * what replaces them says why there is nothing and what it does not mean.
+ * Same wording as `scan`'s never-reached, because it is the same event.
+ */
+function renderUnreached(live: LiveAuditResult): string {
+  const lines: string[] = [];
+  lines.push("# palar LIVE audit report");
+  lines.push("");
+  lines.push(`- **Timestamp:** ${live.timestamp}`);
+  lines.push(`- **Server:** ${live.serverName} (${live.transportKind})`);
+  lines.push(
+    `- **Outcome:** ${
+      live.outcome === "never-reached"
+        ? "NEVER REACHED — no probe was sent, no score"
+        : "connected, zero tools — nothing to probe, no score"
+    }`
+  );
+  lines.push(`- **Total duration:** ${live.durationMs}ms`);
+  lines.push("");
+  lines.push("## Nothing was examined on this target");
+  lines.push("");
+  if (live.outcome === "never-reached") {
+    lines.push(live.unreachable?.reason ?? "palar never obtained a tool list from this target.");
+    lines.push("");
+    lines.push(
+      "palar examined nothing here, which is not the same as finding nothing. No tool was " +
+        "called, no payload was built, and no probe result exists to interpret — so this " +
+        "report makes no claim whatsoever about the target's security posture, in either " +
+        "direction. Any static findings listed by the same run describe the definition FILES " +
+        "on disk; they were not verified against this server, because this server never " +
+        "answered."
+    );
+  } else {
+    lines.push(
+      "The server completed the MCP handshake and reported zero tools, so there were no " +
+        "tools to probe. That is a real observation about the running server — it answered — " +
+        "but it is not coverage: nothing was exercised, and no score is reported for it."
+    );
+  }
+  lines.push("");
+  // The reason is already the body of this report, so an Errors section
+  // repeating it verbatim is noise. Only errors that say something the
+  // paragraph above did not are worth a second appearance.
+  const extraErrors = live.errors.filter((e) => e !== live.unreachable?.reason);
+  if (extraErrors.length > 0) {
+    lines.push("## Errors");
+    lines.push("");
+    for (const e of extraErrors) lines.push(`- ${e}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
 export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAuditResult): string {
+  // Before anything else: a run that never got a tool list gets a report
+  // that cannot be mistaken for one that did. See renderUnreached().
+  if (live.outcome !== "probed") return renderUnreached(live);
+
   const lines: string[] = [];
   lines.push("# palar LIVE audit report");
   lines.push("");
@@ -186,7 +250,17 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
       live.pid !== null ? `, pid ${live.pid}` : ""
     })`
   );
-  lines.push(`- **Connect time:** ${live.connectDurationMs}ms`);
+  // Three numbers, not one, because only the last is about the server. A
+  // reader looking at a slow scan needs to know whether the target was slow
+  // or palar was.
+  lines.push(
+    `- **palar setup:** ${live.sandboxSetupMs}ms (Docker preflight, images, network, oracle)` +
+      (live.transportKind === "stdio" ? `; container start ${live.containerStartMs}ms` : "")
+  );
+  lines.push(
+    `- **Target handshake:** ${live.connectDurationMs}ms ` +
+      `(measured from the container running, so it is the server's latency alone)`
+  );
   lines.push(`- **Live tools discovered:** ${live.liveTools.length}`);
   lines.push(
     `- **Oracle listener:** ${live.oracle.baseUrl} (${

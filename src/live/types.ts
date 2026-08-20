@@ -61,11 +61,67 @@ export interface ToolDriftEntry {
   kind: "only-in-static-file" | "only-in-live-server";
 }
 
+/**
+ * What one live scan of one server actually achieved, before any question
+ * about what it found.
+ *
+ * The same distinction enumerate.ts's EnumerationResult draws, for the same
+ * reason and with deliberately the same words — a `live` run that never got
+ * a tool list is the identical event as a `scan --from-command` that never
+ * got one, and the two commands must not describe it differently:
+ *
+ *   - `probed`        — the target answered the handshake and listed at
+ *     least one tool. Whatever the probes then said, palar examined
+ *     something and a verdict is meaningful.
+ *   - `no-tools`      — the handshake succeeded and the server truthfully
+ *     reported nothing. No tool was exercised because there was none to
+ *     exercise.
+ *   - `never-reached` — palar never got a tool list at all: the declared
+ *     command names no program on this disk, the container never started,
+ *     the handshake timed out, the SSE endpoint refused. This says nothing
+ *     whatsoever about the target's security posture, and it must never be
+ *     reported in a shape a clean pass could also produce.
+ *
+ * This lives on the result rather than being inferred from `errors.length`
+ * because the two are not the same question: a run can reach a target,
+ * probe it, and still collect an error on the way out.
+ */
+export type LiveOutcome = "probed" | "no-tools" | "never-reached";
+
 export interface LiveAuditResult {
   timestamp: string;
   serverName: string;
   transportKind: "stdio" | "sse";
+  outcome: LiveOutcome;
+  /**
+   * Why the target was never reached, in one sentence a reader can act on.
+   * Non-null exactly when `outcome` is `"never-reached"` — carried
+   * separately from `errors` so a consumer never has to pick the
+   * load-bearing string out of a list.
+   */
+  unreachable: { reason: string } | null;
   pid: number | null;
+  /**
+   * How long palar spent preparing its OWN tools before the target was
+   * touched: Docker preflight, building the sandbox images if they were
+   * missing, creating the network, starting the oracle, installing the
+   * firewall. Reported separately because it is not the target's latency
+   * and must never be read as such — on a first run, building the runtime
+   * image dominates this number and nothing has been asked of the server
+   * yet.
+   */
+  sandboxSetupMs: number;
+  /**
+   * How long `docker run` took to get this scan's container into a running
+   * state, stdio only. Also palar's own latency, also not the target's.
+   */
+  containerStartMs: number;
+  /**
+   * How long the TARGET took to answer the MCP handshake, measured from the
+   * moment its container was running. This is the only one of the three
+   * that says anything about the server, and it is what
+   * `--connect-timeout-ms` bounds.
+   */
   connectDurationMs: number;
   liveTools: { name: string; description?: string }[];
   toolDrift: ToolDriftEntry[];

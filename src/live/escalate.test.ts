@@ -19,6 +19,7 @@ function ivFinding(toolName: string, fieldPath: string, severity: Severity = "me
     ruleId: "IV-001",
     pillar: "schema-integrity",
     severity,
+    confidence: "hypothesized",
     title: `Unconstrained input on potentially sensitive field "${fieldPath}" (unverified)`,
     detail: "This is a hypothesis from the field's name and shape.",
     location: {
@@ -68,6 +69,10 @@ function liveOf(probes: LiveProbeResult[]): LiveAuditResult {
     timestamp: "2026-08-19T00:00:00.000Z",
     serverName: "t",
     transportKind: "stdio",
+    outcome: "probed",
+    unreachable: null,
+    sandboxSetupMs: 0,
+    containerStartMs: 0,
     pid: 1,
     connectDurationMs: 1,
     liveTools: [],
@@ -111,11 +116,17 @@ test("a confirmed callback escalates the matching finding to critical", () => {
 
 test("escalation recomputes the score rather than carrying the old one", () => {
   const before = auditOf([ivFinding("t", "command")]);
-  assert.equal(before.score.value, 85); // 100 - medium(15)
+  // 100 - medium(15) x hypothesized(0.25) = 96.25, rounded.
+  assert.equal(before.score.value, 96);
+  assert.equal(before.score.grade, "A");
 
   const after = escalateConfirmedFindings(before, [liveOf([probe("t", "command", "confirmed")])]);
-  assert.equal(after.score.value, 50); // 100 - critical(50)
-  assert.equal(after.score.grade, "D");
+  // 100 - critical(50) x confirmed(1.25) = 37.5, rounded. The whole point
+  // of the escalation is that it moves the grade hard: a field that read
+  // as an A-grade hypothesis is now an F-grade proven injection, on the
+  // strength of a callback rather than a re-reading of the same schema.
+  assert.equal(after.score.value, 38);
+  assert.equal(after.score.grade, "F");
 });
 
 test("a rejected probe changes nothing — never a downgrade", () => {
@@ -168,7 +179,9 @@ test("a confirmed probe with no static finding is reported, not dropped", () => 
   assert.equal(after.findings[0]!.severity, "critical");
   assert.match(after.findings[0]!.title, /CONFIRMED server-side request forgery/);
   assert.match(after.findings[0]!.detail, /No static finding existed on this field/);
-  assert.equal(after.score.value, 50);
+  assert.equal(after.findings[0]!.confidence, "confirmed");
+  assert.equal(after.score.value, 38);
+  assert.equal(after.score.grade, "F");
 });
 
 test("confirmations across several servers all apply to one result", () => {

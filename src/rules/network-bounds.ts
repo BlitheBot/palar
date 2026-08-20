@@ -69,6 +69,9 @@ export const networkBoundsRule: ServerRule = {
       findings.push({
         ruleId: "NB-001",
         pillar: "network-boundaries",
+        // The config explicitly says egressFilterEnabled: false. That is
+        // read, not inferred.
+        confidence: "observed",
         severity: "high",
         title: `Server "${server.name}" declares egress filtering disabled`,
         detail:
@@ -88,6 +91,8 @@ export const networkBoundsRule: ServerRule = {
       findings.push({
         ruleId: "NB-002",
         pillar: "network-boundaries",
+        // Filter on, allowlist empty — both are declared facts in the file.
+        confidence: "observed",
         severity: "medium",
         title: `Server "${server.name}" enables egress filtering with no allowlist`,
         detail:
@@ -113,6 +118,10 @@ export const networkBoundsRule: ServerRule = {
         findings.push({
           ruleId: "NB-003",
           pillar: "network-boundaries",
+          // The entry IS a loopback address. What is NOT established is
+          // that anything reaches it at runtime — that is a declaration
+          // check, which is why this is `observed` and not `confirmed`.
+          confidence: "observed",
           severity: "critical",
           title: `Server "${server.name}" exposes loopback host "${rawHost}"`,
           detail:
@@ -130,6 +139,9 @@ export const networkBoundsRule: ServerRule = {
         findings.push({
           ruleId: "NB-004",
           pillar: "network-boundaries",
+          // As NB-003: the declared host really is in private/link-local
+          // space. No route was demonstrated.
+          confidence: "observed",
           severity: "high",
           title: `Server "${server.name}" exposes private-network host "${rawHost}"`,
           detail:

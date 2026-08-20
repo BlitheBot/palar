@@ -83,7 +83,14 @@ export type EnumerationResult =
 export interface EnumerateOptions {
   /** Milliseconds to wait for the connect/handshake. Defaults to connector.ts's own default. */
   connectTimeoutMs?: number;
-  /** Hard ceiling for the whole enumeration, default 60000ms. Races everything, connect included. */
+  /**
+   * Hard ceiling for the whole enumeration, default 180000ms. Races
+   * everything, connect included — so it has to stay above the connect
+   * timeout or it silently preempts it. Enumeration itself is one
+   * `listTools()`, so this budget is almost entirely the connect: see
+   * connector.ts for the per-target measurements behind the 90s default
+   * it must clear.
+   */
   overallTimeoutMs?: number;
   /**
    * Environment variables to set inside the container, `--from-command`
@@ -165,13 +172,25 @@ export function describeSource(source: EnumerationSource): string {
  * limitation belongs to the image, is named in --help and the README, and
  * is not papered over here.
  */
-export function planContainerCommand(
-  command: string,
-  args: string[],
-  cwd: string = process.cwd()
-): ContainerCommandPlan {
-  const tokens = [command, ...args];
-
+/**
+ * The first token in an argv that names a file existing on this disk, or
+ * `undefined` when none does.
+ *
+ * Shared by the two places that start a target inside the sandbox, because
+ * the failure it prevents is identical in both and only one of them used to
+ * catch it. The container image provides Node and nothing else, and
+ * `node:20-slim`'s entrypoint runs `node "$@"` for any argv[0] that is not
+ * a system command — so a target declared as `python -m mcp_server_fetch`
+ * does not fail with "python: not found". It reaches Node as a *script
+ * path* and dies with `Cannot find module '/target/python'`, which reads
+ * like a broken target rather than an unsupported invocation. There is no
+ * point starting a container to learn that.
+ *
+ * Existence is the whole test, deliberately. Whether the file is a
+ * *runnable* Node program is not knowable from the host, and pretending
+ * otherwise would trade a precise check for a guess.
+ */
+export function findProgramToken(tokens: string[], cwd: string): string | undefined {
   const isExistingFile = (token: string): boolean => {
     // Bare `-`-prefixed flags are never paths; skipping them avoids an
     // absurd-but-possible collision with a file of the same name sitting
@@ -183,8 +202,17 @@ export function planContainerCommand(
       return false;
     }
   };
+  return tokens.find(isExistingFile);
+}
 
-  const programToken = tokens.find(isExistingFile);
+export function planContainerCommand(
+  command: string,
+  args: string[],
+  cwd: string = process.cwd()
+): ContainerCommandPlan {
+  const tokens = [command, ...args];
+
+  const programToken = findProgramToken(tokens, cwd);
   if (programToken === undefined) {
     throw new EnumerationPlanError(
       `--from-command could not find a program to run: none of \`${tokens.join(" ")}\` names a ` +
@@ -332,7 +360,7 @@ export async function enumerateFromUrl(
 ): Promise<EnumerationResult> {
   const source: EnumerationSource = { kind: "url", url };
   const start = Date.now();
-  const overallTimeoutMs = opts.overallTimeoutMs ?? 60_000;
+  const overallTimeoutMs = opts.overallTimeoutMs ?? 180_000;
   const server: MCPServerConfig = { name: url, transport: "sse", url };
 
   let connection: LiveConnection | null = null;
@@ -389,7 +417,7 @@ export async function enumerateFromCommand(
 
   const source: EnumerationSource = { kind: "command", command: plan.command, args: plan.args };
   const start = Date.now();
-  const overallTimeoutMs = opts.overallTimeoutMs ?? 60_000;
+  const overallTimeoutMs = opts.overallTimeoutMs ?? 180_000;
   const server: MCPServerConfig = {
     name: describeSource(source),
     transport: "stdio",

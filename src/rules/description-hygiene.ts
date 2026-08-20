@@ -61,6 +61,9 @@ export const descriptionHygieneRule: ToolRule = {
       findings.push({
         ruleId: "DH-001",
         pillar: "text-sanitization",
+        // A character count of text palar read. The detail already calls
+        // it "a context-budget observation".
+        confidence: "observed",
         severity: "low",
         title: `Very long description on tool "${tool.name}"`,
         detail:
@@ -87,6 +90,10 @@ export const descriptionHygieneRule: ToolRule = {
         findings.push({
           ruleId: "DH-002",
           pillar: "text-sanitization",
+          // The phrase is in the description, and a description is fed to
+          // the model verbatim — so the exposure is realised at the point
+          // palar read it, not conditional on unseen code.
+          confidence: "observed",
           severity: "medium",
           title: `Possible injection phrasing in description of "${tool.name}"`,
           detail:
@@ -119,6 +126,8 @@ export const descriptionHygieneRule: ToolRule = {
       findings.push({
         ruleId: "DH-003",
         pillar: "text-sanitization",
+        // The description is missing or placeholder. Nothing to infer.
+        confidence: "observed",
         severity: "low",
         title: `Missing or placeholder description on tool "${tool.name}"`,
         detail:

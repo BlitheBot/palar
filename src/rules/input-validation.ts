@@ -244,6 +244,10 @@ export const inputValidationRule: ToolRule = {
           findings.push({
             ruleId: "IV-001",
             pillar: "schema-integrity",
+            // The whole rule is a name heuristic. It cannot see whether
+            // this value reaches an interpreter, and the detail below says
+            // so — the confidence has to agree with the prose.
+            confidence: "hypothesized",
             // medium, not high. See this rule's header for the full
             // argument: the severity has to match what the method can
             // actually establish, and a field-name keyword cannot
@@ -288,6 +292,10 @@ export const inputValidationRule: ToolRule = {
             findings.push({
               ruleId: "IV-003",
               pillar: "schema-integrity",
+              // The vacuous pattern is observed, but this rule only fires
+              // on a keyword-matched field, so "execution-adjacent" — the
+              // part that makes it matter — is still the IV-001 guess.
+              confidence: "hypothesized",
               severity: "medium",
               title: `Trivial pattern on execution-adjacent field "${path}"`,
               detail:
@@ -309,6 +317,10 @@ export const inputValidationRule: ToolRule = {
             findings.push({
               ruleId: "IV-004",
               pillar: "schema-integrity",
+              // The backtracking construct is really in the pattern, but
+              // the finding is a DoS claim conditioned on "if a downstream
+              // validator evaluates it" — code palar never read.
+              confidence: "hypothesized",
               severity: "medium",
               title: `Backtracking-prone pattern on field "${path}"`,
               detail:
@@ -336,6 +348,9 @@ export const inputValidationRule: ToolRule = {
       findings.push({
         ruleId: "IV-002",
         pillar: "schema-integrity",
+        // "Executes commands" inferred from the tool's NAME. Same ceiling
+        // as IV-001.
+        confidence: "hypothesized",
         severity: "low",
         title: `Execution-adjacent tool "${tool.name}" declares no input schema`,
         detail:

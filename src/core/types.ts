@@ -65,11 +65,50 @@ export interface FindingLocation {
   line?: number;
 }
 
+/**
+ * How much of a finding palar actually saw, as opposed to inferred.
+ *
+ * Orthogonal to severity, and the two answer different questions. Severity
+ * asks *how bad is this if it is real*; confidence asks *how much of this
+ * did palar establish rather than guess*. Collapsing them is what made
+ * server-filesystem score 20/F on eleven findings whose own text calls them
+ * hypotheses, while desktop-commander's callback-proven shell injection
+ * carried the same weight per finding as a field name that merely looked
+ * dangerous.
+ *
+ * The test that assigns this is one question: **does the finding assert
+ * something palar did not read?**
+ *
+ *   - `confirmed`    — palar ran it and watched it happen. Today that means
+ *     exactly one thing: an out-of-band callback bearing this probe's nonce
+ *     arrived at palar's own listener. Nothing else in the codebase may
+ *     claim this value, because nothing else has evidence of that kind.
+ *   - `observed`     — the defect is fully present in the artifact palar
+ *     read. A bidi override IS in the description; an AWS key IS in the
+ *     file; `exposedHosts[0]` IS a loopback address. There is no further
+ *     fact to establish — the finding is complete as read.
+ *   - `hypothesized` — the finding's severity depends on runtime behaviour
+ *     palar never saw. Every static input-validation rule lands here: they
+ *     infer "this value reaches an interpreter" from the field's NAME, and
+ *     IV-001's own detail text says so in as many words.
+ *
+ * Deliberately a REQUIRED field rather than an optional one with a default.
+ * A default is a decision made by whoever forgets to think about it, and
+ * both directions are wrong in a way that matters: defaulting to `observed`
+ * scores a new hypothesis-shaped rule ~2.4x too harshly, and defaulting to
+ * `hypothesized` scores a new evidence-shaped rule ~4x too softly. Making
+ * it required turns "a new rule must state what kind of claim it is" into a
+ * compile error rather than a code-review habit.
+ */
+export type Confidence = "confirmed" | "observed" | "hypothesized";
+
 /** A single issue reported by a rule. */
 export interface Finding {
   ruleId: string;
   pillar: Pillar;
   severity: Severity;
+  /** What palar established vs. inferred. See Confidence — required on purpose. */
+  confidence: Confidence;
   title: string;
   detail: string;
   location: FindingLocation;

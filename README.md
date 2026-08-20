@@ -91,6 +91,60 @@ inverse error exists too: `browser_run_code_unsafe` calls itself
 RCE-equivalent in its own description and gets no finding, because `code`
 is not a keyword.
 
+#### Confidence is scored separately from severity
+
+Every finding carries a **confidence** alongside its severity, and the score
+multiplies the two. They answer different questions — severity asks *how bad
+is this if it is real*, confidence asks *how much of this did palar
+establish* — and collapsing them is what made `server-filesystem` score
+20/F on eleven findings whose own text calls them hypotheses.
+
+| Confidence | Weight | What it means |
+| --- | --- | --- |
+| `CONFIRMED` | ×1.25 | palar sent a payload and an out-of-band callback carrying that probe's nonce came back. Settled. |
+| `OBSERVED` | ×0.6 | The defect is present in the definition palar read — the bidi override, the credential, the declared loopback host really are there. Not a guess; also not a demonstrated runtime route. |
+| `UNVERIFIED` | ×0.25 | Inferred from a field's name and shape. Every static `IV-*` rule. Worth looking at; not a demonstrated defect. |
+
+Two rules sit on top of the arithmetic, stated rather than derived, and they
+are deliberate mirrors of each other:
+
+- **Any `CONFIRMED` finding forces grade F**, whatever the number says.
+  palar watched it happen, and a settled result is not a matter of degree.
+  Today the weights would reach F on their own for a confirmed *critical* —
+  but that is a coincidence of three constants, and a future confirmed class
+  at a lower severity would silently start passing a gate.
+- **`UNVERIFIED` findings alone can never reach F**; the grade floors at D.
+  A field-name heuristic must be able to move a grade but never decide one,
+  and the per-rule dampening sums to `2*sqrt(n)` rather than converging — so
+  without this floor ~65 unverified mediums would land back in F with
+  nothing demonstrated about any of them. One `OBSERVED` finding lifts the
+  floor: a fact in the file is allowed to carry a result to F on its own.
+
+The numeric score is never rewritten to agree with a clamped letter. It
+still ranks total exposure, so `desktop-commander` (11/F, one confirmation)
+and `vuln-server` (0/F, two confirmations plus six observed findings) stay
+distinguishable.
+
+Measured across the sample, before and after this axis existed:
+
+| Target | Tools | Findings | `scan` | `live` | Confidence mix |
+| --- | --- | --- | --- | --- | --- |
+| desktop-commander | 26 | 15 | 4/F → **72/C** | 0/F → **11/F** | 1 confirmed, 3 observed, 11 unverified |
+| server-everything | 13 | 0 | 100/A → 100/A | 100/A → 100/A | — |
+| mcp-server-fetch | 1 | 1 | 85/B → **96/A** | *never reached — no score* | 1 unverified |
+| server-filesystem | 14 | 11 | 20/F → **80/B** | 20/F → **80/B** | 11 unverified |
+| server-memory | 9 | 1 | 85/B → **96/A** | 85/B → **96/A** | 1 unverified |
+| playwright-mcp | 24 | 2 | 74/C → **94/A** | 74/C → **94/A** | 2 unverified |
+| `vuln-server` fixture | 3 | 8 | 0/F → **0/F** | 0/F → **0/F** | 2 confirmed, 6 observed |
+
+Score normalization by tool count is deliberately **not** applied, and this
+is why it is not needed: playwright-mcp (24 tools, 2 findings) used to score
+11 points worse than mcp-server-fetch (1 tool, 1 finding); it now scores 2
+points worse, and those 2 points are exactly "two findings instead of one".
+The punishment was never really about tool count — it was 24 tools' worth of
+accumulated hypotheses. Dividing the penalty by tool count would also let a
+server dilute a confirmed injection by shipping more clean tools.
+
 So the two tiers say different things, and palar keeps them apart:
 
 - **Static (`scan`) states a hypothesis at `medium`,** in wording that says
@@ -168,11 +222,12 @@ palar scan --from-command node ./dist/index.js -- --headless --isolated
   palar's own process, so a server that stores state under `$HOME` needs
   `--from-env HOME=/tmp` (the container's root filesystem is read-only and
   only `/tmp` is writable).
-- `--connect-timeout-ms` / `--timeout-ms` — the connect/handshake budget and
-  the hard ceiling for the whole enumeration. A `--from-command` target has
-  to start a container before it can answer, and some servers do work at
-  startup before responding to `initialize`; measured against
-  desktop-commander that is around 50 seconds on Docker Desktop.
+- `--connect-timeout-ms` (default 90000) / `--timeout-ms` (default 180000) —
+  the connect/handshake budget and the hard ceiling for the whole
+  enumeration. A `--from-command` target has to start a container before it
+  can answer, and some servers do work at startup before responding to
+  `initialize`; measured against desktop-commander that is 44–53 seconds on
+  Docker Desktop. See `live`'s per-target table below for the full range.
 
 #### What `--from-command` can and cannot run
 
@@ -303,22 +358,70 @@ palar live fixtures/vuln-server --execute
 
 `--execute` is required — `live` refuses to run without it, since (unlike
 `scan`) it has real side effects. Other flags: `--timeout-ms` (hard ceiling
-for the whole scan per server, default 60000), `--connect-timeout-ms` (how
-long to wait for a target's connect/handshake, default 30000 — a stdio
-target has to start a container and then get itself to the point of
-answering, measured at 8–10s for the `vuln-server` fixture on Docker
-Desktop; `--timeout-ms` bounds the whole scan, so keep it the larger of the
-two or it preempts this one), `--callback-timeout-ms`,
-`--oracle-host` (default `127.0.0.1`, SSE targets only — see below),
-`--json`, `--out`.
+for the scan per server, default 180000), `--connect-timeout-ms` (how long
+to wait for the target to answer the handshake, default 90000),
+`--container-start-timeout-ms` (palar's own container start, default
+120000), `--callback-timeout-ms`, `--oracle-host` (default `127.0.0.1`, SSE
+targets only — see below), `--json`, `--out`.
+
+#### What each timeout actually measures
+
+A live scan has three phases, and only one of them is about the server.
+They are budgeted and reported separately, because charging palar's own
+setup to a timeout named for the target produced a "never reached" verdict
+about a server that had not been asked anything yet.
+
+| Phase | Bounded by | Whose latency |
+| --- | --- | --- |
+| Docker preflight, building the sandbox images, network, oracle, firewall | *nothing* — see below | palar's |
+| `docker run` reaching a running container | `--container-start-timeout-ms` (120000) | this machine's Docker daemon |
+| The target answering the MCP handshake | `--connect-timeout-ms` (90000) | **the server's** |
+| Everything after that (listTools + every probe) | `--timeout-ms` (180000) | the server's |
+
+**Setup is not raced against `--timeout-ms` at all.** On a first run it has
+to fetch a ~300MB base image and install into it — palar building its own
+tools, not a target being slow. It announces itself instead (`building the
+sandbox image … first run only`), and a failure there says it was palar's
+setup that failed rather than blaming the server.
+
+The deadline is armed *after* setup returns, and that ordering is load-
+bearing rather than cosmetic: nothing awaits the deadline until the scan's
+own race, so a timer armed before setup rejects with no handler attached.
+That is an unhandled rejection, which kills the process outright — no
+report, no exit code, and the sandbox network already created is leaked for
+the next run's sweep to reclaim. There is a regression test
+(`setup-deadline.test.ts`) that runs a scan with a 1ms budget and asserts
+setup still completes.
+
+`--connect-timeout-ms` starts counting **once the container is running**, so
+it measures target responsiveness alone. Measured on Docker Desktop with
+warm images, palar's own overhead is ~2.5s of setup plus ~0.6s of container
+start; the target handshake by comparison:
+
+| Target | Handshake |
+| --- | --- |
+| `playwright-mcp` | 1.3–3.2s |
+| `server-memory` | 4.5–7.0s |
+| `server-everything` | 5.4–8.0s |
+| `server-filesystem` | 5.2–10.1s |
+| `vuln-server` fixture | 7.2–15.9s |
+| `desktop-commander` | 44.0–53.4s |
+
+`desktop-commander` is why the default is 90000 and not less: it fetches
+remote feature flags before answering `initialize`, and the sandbox denies
+it that network, so it waits out its own HTTP timeout first. At the previous
+30000 default the most dangerous server in the sample reported as a connect
+failure and produced nothing, every run. `--timeout-ms` bounds the scan and
+races the handshake, so keep it the larger of the two or it preempts this
+one.
 
 #### Exit codes
 
 | Outcome | Exit |
 | --- | --- |
 | Something was CONFIRMED by an oracle callback | `1` |
-| Probes ran and every one of them was NOT TESTED | `2` |
-| Anything else (including partial coverage) | `0` |
+| palar examined nothing — no target reached, every target reached had zero tools, or every probe was NOT TESTED | `2` |
+| At least one target was reached and probing happened (including partial coverage) | `0` |
 
 `2` is the same code, for the same reason, that `scan` uses for a target it
 never reached: a scan that exercised nothing must not exit `0` alongside a
@@ -326,6 +429,40 @@ scan that exercised everything and found it clean. A confirmed finding
 outranks it — a result beats a report about coverage. Partial coverage
 exits `0` with a warning naming how many probes did not land; whatever did
 run really ran.
+
+Note `live`'s `1` and `scan`'s `1` mean different things (`scan` uses it
+for "reached, zero tools"). That is why `live` folds its own zero-tools
+case into `2` rather than matching `scan`'s numbering: `live`'s `1` is the
+CONFIRMED gate, and a coverage gap must never be reported as a
+confirmation.
+
+#### A target that was never reached
+
+`live` refuses to describe a target it never spoke to in a shape a clean
+pass could also produce. Before starting anything, it checks that the
+server's declared `command`/`args` name a program that exists under the
+mount — the same pre-flight `scan --from-command` has always run. A
+manifest declaring `python -m mcp_server_fetch` is refused there, with the
+reason, rather than starting a container in which `python` reaches Node as
+a *script path* and dies as `Cannot find module '/target/python'`.
+
+When no target is reached — by that check, by a connect timeout, by a
+container that never started — then:
+
+- the exit code is `2`, never `0`;
+- the report says `NEVER REACHED` and prints no probe sections at all (a
+  page of "CONFIRMED: None." reads as a target that was exercised and came
+  back clean, which is the opposite of what happened);
+- `--json` carries `"outcome": "never-reached"` and **no `score` field**.
+  The findings stay — they are observations about files palar really did
+  read — but a grade is a summary verdict, and a run that spoke to no
+  running server has no verdict. A CI job reads a grade as the answer to
+  "did this pass?", and `85/B` for a target that never started is that
+  question answered wrong.
+
+On a mixed run, `--json` carries `"outcome": "partial"`, every unreached
+server is named on its own red status line, and the exit code is decided by
+the servers that did answer.
 
 ### Sandboxing: stdio targets run in a Docker container
 
@@ -558,6 +695,16 @@ skipped with a warning (surfaced in the report and `--json` output), as are
 entries missing a string `name`. Duplicate tool names and files matching
 both a tool and a server pattern also produce warnings rather than failing
 the scan.
+
+A path may be a **file** as well as a directory — `palar scan
+./config/mcp.tools.json` reads exactly that file. The naming conventions
+above still decide which analyser it gets, because the two rule sets are
+different and nothing in a bare JSON object reliably says which one it is;
+running the wrong one produces confident findings about the wrong thing. So
+a named file whose name matches neither convention is refused with a
+message saying so and naming the patterns, and a path that does not exist
+is reported as such rather than being silently indistinguishable from an
+empty directory.
 
 ## Architecture
 

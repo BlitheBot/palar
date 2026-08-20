@@ -34,13 +34,33 @@ export interface LiveConnection {
   /** Child process pid for stdio targets; null for SSE (no local process). */
   pid: number | null;
   transportKind: "stdio" | "sse";
+  /**
+   * How long palar's own container took to reach a running state, stdio
+   * only (0 for SSE). Reported separately from the handshake so a slow
+   * Docker daemon is never read as a slow target.
+   */
+  containerStartMs: number;
   /** Graceful close, then an unconditional kill-by-pid backstop for stdio. */
   close(): Promise<void>;
 }
 
 export interface ConnectOptions {
-  /** Milliseconds to wait for the initial connect/handshake. */
+  /**
+   * Milliseconds to wait for the target to answer the MCP handshake.
+   *
+   * For a stdio target the clock starts when the CONTAINER IS RUNNING, not
+   * when `docker run` was invoked — see TargetSandbox.waitForContainerRunning().
+   * palar's own container-start latency has its own budget below, because
+   * charging it here meant a cold Docker daemon reported as a target that
+   * never answered.
+   */
   connectTimeoutMs?: number;
+  /**
+   * Milliseconds to wait for palar's own sandbox container to reach a
+   * running state, stdio only. Separate from connectTimeoutMs on purpose:
+   * this one measures this machine, that one measures the target.
+   */
+  containerStartTimeoutMs?: number;
   /** Required for stdio targets: the sandbox the target's container runs in. */
   sandbox?: TargetSandbox;
   /** Required for stdio targets: read-only mount root for the container (the target's own directory). */
@@ -179,18 +199,44 @@ export async function connectLive(
   server: MCPServerConfig,
   opts: ConnectOptions = {}
 ): Promise<LiveConnection> {
-  // 30s, not the 10s this used to default to. A stdio target's connect
-  // covers container start plus whatever the target does before it answers
-  // the MCP handshake — for the vuln-server fixture (Node + tsx compiling
-  // TypeScript in a cold container) that was measured at 8.2–9.9s across
-  // runs on Docker Desktop, i.e. a coin-flip against a 10s ceiling that
-  // reported a healthy target as a connect timeout roughly half the time.
-  // This is a backstop against a target that never answers, so it should
-  // sit well clear of legitimate slow starts rather than tightly bound
-  // them. Callers who need a tighter bound pass connectTimeoutMs
-  // (`--connect-timeout-ms`); note liveScan.ts's overall ceiling preempts
-  // this one if it is the smaller of the two.
-  const connectTimeoutMs = opts.connectTimeoutMs ?? 30_000;
+  // 90s. A stdio target's connect covers container start plus whatever the
+  // target chooses to do before it answers the MCP handshake, and the
+  // second term is the one that decides this number — it is the target's
+  // behaviour, not palar's, and it varies by an order of magnitude across
+  // real servers. Measured on Docker Desktop, connect-to-tool-list:
+  //
+  //   playwright-mcp        1.9-3.2s
+  //   server-memory         5.4-7.0s
+  //   server-everything     5.9-8.0s
+  //   server-filesystem     5.4-10.1s
+  //   vuln-server fixture   8.2-15.9s   (tsx compiling TypeScript, cold)
+  //   desktop-commander     46.0s
+  //
+  // desktop-commander is the case that forced this. It fetches remote
+  // feature flags before answering `initialize`, and the sandbox denies it
+  // that network — so it waits out its own HTTP timeout and only then
+  // replies. At the previous 30s default it never replied in time: the most
+  // dangerous server in the sample reported as a connect failure and
+  // produced nothing, every run. 90s is ~2x the worst legitimate case
+  // observed, which is the right shape for a backstop against a target that
+  // will never answer — it must sit well clear of slow starts rather than
+  // tightly bound them, because the cost of being too tight is a silent
+  // non-result and the cost of being too loose is waiting.
+  //
+  // Note this is above the SDK's own 60s DEFAULT_REQUEST_TIMEOUT_MSEC,
+  // which is why connectWithTimeout() exists — without it a 90s ceiling
+  // would be a lie that aborted at 60s. Callers who need a tighter bound
+  // pass connectTimeoutMs (`--connect-timeout-ms`); note liveScan.ts's
+  // overall ceiling preempts this one if it is the smaller of the two.
+  const connectTimeoutMs = opts.connectTimeoutMs ?? 90_000;
+  // palar's own container start, kept out of the number above. Generous
+  // because it is bounded by this machine's Docker daemon rather than by
+  // anything palar or the target controls: a warm daemon does this in under
+  // two seconds (every target in the sample), and a cold Docker Desktop /
+  // WSL2 has been measured taking tens of seconds. It only has to be large
+  // enough that "the daemon was slow" never gets reported as "the target
+  // never answered".
+  const containerStartTimeoutMs = opts.containerStartTimeoutMs ?? 120_000;
   // The identity the target sees in the MCP handshake, and often the only
   // thing it records about who connected. Two properties matter:
   //
@@ -220,6 +266,9 @@ export async function connectLive(
       client,
       pid: null,
       transportKind: "sse",
+      // Nothing local is started for SSE, so there is no container to wait
+      // for and nothing of palar's own to subtract.
+      containerStartMs: 0,
       async close() {
         await transport.close();
       },
@@ -261,9 +310,46 @@ export async function connectLive(
   // The connect is kicked off first and awaited below, so that the stderr
   // listener attaches while the target is starting rather than after it has
   // already failed. See StderrCapture for why that ordering is safe.
+  //
+  // The SDK's own request timeout has to cover BOTH phases, since its clock
+  // starts here: if it were given only connectTimeoutMs it would abort
+  // mid-handshake for any target whose container was slow to start, which
+  // is precisely the confusion the two-phase split exists to remove.
   const stderr = new StderrCapture();
-  const connecting = connectWithTimeout(client, transport, connectTimeoutMs);
+  const connecting = connectWithTimeout(
+    client,
+    transport,
+    containerStartTimeoutMs + connectTimeoutMs
+  );
   stderr.attach(transport);
+
+  // Attaching handlers here does not consume the rejection — `connecting`
+  // stays rejected and the await below still sees it — it only records that
+  // the race is over so the container poll can stop early, and keeps Node
+  // from reporting an unhandled rejection in the window before that await.
+  let connectSettled = false;
+  const markSettled = (): void => {
+    connectSettled = true;
+  };
+  connecting.then(markSettled, markSettled);
+
+  let containerStartMs = 0;
+  try {
+    containerStartMs = await opts.sandbox.waitForContainerRunning(
+      containerStartTimeoutMs,
+      () => connectSettled
+    );
+  } catch (err) {
+    try {
+      await transport.close();
+    } catch {
+      // Already dead, or never started.
+    }
+    throw new ConnectorError(`${(err as Error).message}${stderr.suffix()}`);
+  }
+
+  // Only now does the target's own clock start. Everything above this line
+  // was palar getting out of its own way.
   try {
     await withTimeout(connecting, connectTimeoutMs, `connect to "${server.name}" (stdio)`);
   } catch (err) {
@@ -284,6 +370,7 @@ export async function connectLive(
     client,
     pid,
     transportKind: "stdio",
+    containerStartMs,
     async close() {
       if (closed) return;
       closed = true;

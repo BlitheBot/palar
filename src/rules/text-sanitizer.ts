@@ -194,6 +194,10 @@ export const textSanitizerRule: ToolRule = {
           ruleId: category.ruleId,
           pillar: "text-sanitization",
           severity: category.severity,
+          // The code points are in the text, counted and listed by
+          // position. There is nothing further to establish: a bidi
+          // override IS the defect, not a sign of one.
+          confidence: "observed",
           title: `Suspicious ${category.label} in tool ${fieldName}`,
           detail:
             `The "${fieldName}" field of tool "${tool.name}" contains ${count} ` +
@@ -219,6 +223,8 @@ export const textSanitizerRule: ToolRule = {
           ruleId: "TS-006",
           pillar: "text-sanitization",
           severity: "high",
+          // The confusable character is present in the name palar read.
+          confidence: "observed",
           title: `Confusable characters in tool name "${tool.name}"`,
           detail:
             `The name of tool "${tool.name}" contains character(s) that can ` +

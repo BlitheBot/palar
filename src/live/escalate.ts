@@ -84,6 +84,12 @@ function confirmFinding(finding: Finding, probe: LiveProbeResult): Finding {
     ...finding,
     ruleId: CONFIRMED_RULE_ID,
     severity: "critical",
+    // The one place in the codebase entitled to claim this. Everything
+    // else palar reports is read from a file; this is read from a socket
+    // palar was listening on, carrying a nonce palar generated. Note it
+    // overwrites whatever confidence the static finding had — a hypothesis
+    // that turns out to be true does not stay a hypothesis.
+    confidence: "confirmed",
     title: `CONFIRMED ${kind} via "${probe.toolName}.${probe.fieldPath}"`,
     detail:
       `A crafted payload was sent to the live tool "${probe.toolName}" over a real MCP ` +
@@ -108,6 +114,8 @@ function orphanConfirmedFinding(probe: LiveProbeResult, file: string): Finding {
     ruleId: CONFIRMED_RULE_ID,
     pillar: "schema-integrity",
     severity: "critical",
+    // Same evidence as confirmFinding(), reached by a different route.
+    confidence: "confirmed",
     title: `CONFIRMED ${kind} via "${probe.toolName}.${probe.fieldPath}"`,
     detail:
       `A crafted payload sent to the live tool "${probe.toolName}" in field ` +

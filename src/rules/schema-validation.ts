@@ -124,6 +124,14 @@ export const schemaValidationRule: ToolRule = {
         ruleId,
         pillar: "schema-integrity",
         severity,
+        // Every SV-* finding is a property of the schema document itself —
+        // a malformed type, a contradictory bound, a required key that is
+        // not declared. palar read the schema and the defect is in it, so
+        // this helper can fix the confidence for all of them rather than
+        // taking it as a parameter. A future SV rule that inferred runtime
+        // behaviour would need its own push site, which is the intended
+        // friction.
+        confidence: "observed",
         title,
         detail,
         location: { file: ctx.file, jsonPath },

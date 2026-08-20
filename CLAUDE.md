@@ -18,17 +18,17 @@ question, different answer — if you're securing a fleet, run both.
 
 Do not extend the paragraph above to say a PALAR probe reached a real cloud
 metadata endpoint. It does not, by design: `buildSsrfPayload()`
-(`src/live/probes.ts:126`) returns the oracle callback URL itself, the oracle
+(`src/live/probes.ts:144`) returns the oracle callback URL itself, the oracle
 is a loopback HTTP listener, and the stdio sandbox restricts egress to that
 oracle alone. `src/live/oracle.ts:9-17` and the "Limitations of this pass"
-block emitted by `src/live/report.ts:219-226` both disclaim external reach in
+block emitted by `src/live/report.ts:430-437` both disclaim external reach in
 PALAR's own output — any competitive copy claiming otherwise is contradicted
 by the tool's own report. What the callback proves is that the server fetched
 an attacker-supplied URL with no scheme/host allowlist. That is enough; state
 that, not more.
 
 The `169.254.169.254` metadata reference in the codebase belongs to the static
-rule `network-bounds.ts:122`, which flags declared `exposedHosts` in
+rule NB-004 (`network-bounds.ts:131-139`), which flags declared `exposedHosts` in
 `mcp.server.json`. That is a declaration check, not a confirmed reach — keep
 the two separate when writing about coverage.
 
@@ -57,3 +57,37 @@ main at `version = "0.6.0"`; PyPI latest `0.5.17`), not blog posts or summaries:
 
 Re-verify before reusing these in anything outward-facing; v0.6 was unpublished
 on PyPI as of the date above, so `@latest` still resolved to the 0.5.x line.
+
+## Deferred: distinguishing an environmental failure from a target refusal
+
+`rejected` currently spans two things a reader hears differently: the handler
+ran and refused the payload, and the handler could not run at all. Playwright's
+two probes were counted `rejected` when Chromium was simply absent from the
+container — the tool never ran, no request was attempted, and `rejected` reads
+as reassurance.
+
+From the tool result alone this is not separable. MCP gives one `isError`
+boolean and a free-form text body; there is no structured error class, and
+`status.ts` argues at length against pattern-matching the text.
+
+The instrument that DOES separate them without reading error strings is a
+**benign control call**: the same tool, schema-valid benign arguments, no
+payload — machinery that already exists in `benignValueFor()` and
+`runPoisoningCheck()`. If the control errors too, the probe's error was not a
+refusal *of the payload*. Report that as a distinct status, `inconclusive`.
+
+Deliberately not implemented yet, and the reasons are the design work still
+owed rather than an objection:
+
+- It doubles tool calls against a live target.
+- A benign call to a destructive tool is still a real side effect. `delete_file`
+  with schema-valid filler is not a no-op, and the control must not be sent
+  blindly to every tool.
+- It establishes only that the payload was not the cause — not *why*. A missing
+  browser and a tool that refuses everything look identical, though arguably
+  both deserve the same non-reassuring status.
+
+Do not ship this as a quick follow-on to the probe loop. Decide the
+side-effect gate first (which tools may receive a control call at all), then
+measure it against playwright, where the known-correct answer is that both
+probes should stop reading as refusals.

@@ -177,6 +177,10 @@ function buildFindings(
         ruleId: pattern.ruleId,
         pillar: "credential-exposure",
         severity: pattern.severity,
+        // The literal is in the file palar read. Whether the credential is
+        // still valid is not knowable from here and is not what the finding
+        // claims — the exposure is the presence, and the presence is read.
+        confidence: "observed",
         title: `Possible ${pattern.label} in ${subjectLabel}`,
         detail:
           `Found ${hit.count} occurrence(s) matching a ${pattern.label} pattern ` +

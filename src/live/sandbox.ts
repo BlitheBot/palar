@@ -160,13 +160,28 @@ async function dockerBestEffort(args: string[]): Promise<void> {
   }
 }
 
-async function ensureImageBuilt(image: string, contextDir: string): Promise<void> {
+/**
+ * Builds the image if it is not already present, announcing it when it is
+ * actually going to build.
+ *
+ * The announcement is not decoration. A first run has to fetch a ~300MB
+ * base layer and install a package into it, which can take minutes on a
+ * slow link — and the only feedback was silence, followed (if it ran long
+ * enough) by a timeout that blamed the target. `onBuild` lets the caller
+ * say what is happening; nothing else about the build changes.
+ */
+async function ensureImageBuilt(
+  image: string,
+  contextDir: string,
+  onBuild?: (image: string) => void
+): Promise<void> {
   try {
     await execFileAsync("docker", ["image", "inspect", image]);
     return;
   } catch {
     // Not present locally — fall through to build.
   }
+  onBuild?.(image);
   await docker(["build", "-t", image, contextDir]);
 }
 
@@ -333,10 +348,10 @@ export class TargetSandbox {
   }
 
   /** Preflights Docker, builds both images if missing, and creates a fresh per-scan bridge network. */
-  static async create(): Promise<TargetSandbox> {
+  static async create(onBuild?: (image: string) => void): Promise<TargetSandbox> {
     await preflightDocker();
-    await ensureImageBuilt(TARGET_RUNTIME_IMAGE, TARGET_RUNTIME_DIR);
-    await ensureImageBuilt(NET_HELPER_IMAGE, NET_HELPER_DIR);
+    await ensureImageBuilt(TARGET_RUNTIME_IMAGE, TARGET_RUNTIME_DIR, onBuild);
+    await ensureImageBuilt(NET_HELPER_IMAGE, NET_HELPER_DIR, onBuild);
 
     const id = randomBytes(4).toString("hex");
     const networkName = `mcpg-net-${id}`;
@@ -511,6 +526,60 @@ export class TargetSandbox {
     );
 
     return args;
+  }
+
+  /**
+   * Blocks until this scan's container is actually running, and reports how
+   * long that took.
+   *
+   * This exists to fix what `--connect-timeout-ms` MEASURES. The container
+   * is started by the stdio transport spawning `docker run`, so everything
+   * between that spawn and the daemon actually having a process — image
+   * layer extraction, a cold Docker Desktop VM waking up, WSL2 doing
+   * whatever WSL2 does — used to be charged to a budget named for the
+   * target's responsiveness. It is not the target's fault and it is not the
+   * target's behaviour, and the failure it produced said "never reached"
+   * about a server that had not been asked anything yet.
+   *
+   * Polling the daemon rather than watching the pipe because "the container
+   * is running" is a fact the daemon owns and will state; inferring it from
+   * the absence of output would be guessing.
+   *
+   * `abandoned` lets the caller stop the poll early — it is raced against
+   * the connect itself, so a target that answers (or dies) immediately is
+   * never held up by this. The container runs with `--rm`, so a container
+   * that started and exited is indistinguishable from one not yet created;
+   * both keep polling, and the connect failure that follows carries the
+   * target's own stderr, which is the more useful error either way.
+   */
+  async waitForContainerRunning(
+    timeoutMs: number,
+    abandoned: () => boolean = () => false
+  ): Promise<number> {
+    const start = Date.now();
+    for (;;) {
+      if (abandoned()) return Date.now() - start;
+      try {
+        const out = await execFileAsync("docker", [
+          "inspect",
+          "--format",
+          "{{.State.Running}}",
+          this.containerName,
+        ]);
+        if (out.stdout.trim() === "true") return Date.now() - start;
+      } catch {
+        // No such container yet (or already reaped by --rm). Keep waiting.
+      }
+      if (Date.now() - start >= timeoutMs) {
+        throw new SandboxError(
+          `the sandbox container ${this.containerName} was not running ${timeoutMs}ms after ` +
+            "`docker run` was invoked. This is palar's own container start, not the target " +
+            "answering — a cold Docker daemon can take a while. Raise " +
+            "--container-start-timeout-ms if this machine is consistently slow."
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
 
   /**

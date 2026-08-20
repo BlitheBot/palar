@@ -4,6 +4,7 @@
 import type {
   AuditResult,
   AuditScore,
+  Confidence,
   Finding,
   LetterGrade,
   Pillar,
@@ -18,6 +19,41 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
   info: 0,
 };
 
+/**
+ * How much of a finding's severity weight actually lands, by confidence.
+ *
+ * Severity says how bad a finding is IF real; this says how much palar
+ * established that it is. They multiply, and the multiplier is not a
+ * rescaling of severity — a medium hypothesis and a medium observation are
+ * genuinely different claims, and before this existed they cost the same.
+ *
+ * The numbers, and why each is what it is:
+ *
+ *   - `hypothesized` at 0.25. A field-name heuristic should move a grade,
+ *     because it is worth looking at, but it must not decide one. Eleven of
+ *     them (server-filesystem) cost ~20 points and twenty cost ~28 — but the
+ *     1/sqrt(n) dampening sums to 2*sqrt(n), which grows without bound, so
+ *     around 65 of them would still reach F on the arithmetic alone. That is
+ *     the same error this axis exists to fix, just needing more findings to
+ *     trigger, which is why hypothesisOnlyFloor() exists.
+ *   - `observed` at 0.6. The defect is really there in the artifact, so it
+ *     is not a guess — but "there in the file" is still not "reached at
+ *     runtime", and a declared `exposedHosts` entry is a statement of
+ *     intent rather than a demonstrated route.
+ *   - `confirmed` at 1.25, i.e. ABOVE full weight. Evidence outranks
+ *     inference, and this is the only class palar has that rests on a
+ *     callback it received rather than a string it read.
+ *
+ * A confirmed finding always yields grade F — see confirmedForcesF() and
+ * computeScore(), where that is an explicit rule rather than a consequence
+ * of these three numbers.
+ */
+const CONFIDENCE_MULTIPLIERS: Record<Confidence, number> = {
+  confirmed: 1.25,
+  observed: 0.6,
+  hypothesized: 0.25,
+};
+
 /** Most severe first; lower index = more severe. */
 export const SEVERITY_ORDER: Severity[] = [
   "critical",
@@ -27,10 +63,75 @@ export const SEVERITY_ORDER: Severity[] = [
   "info",
 ];
 
+/** Strongest evidence first, for report ordering and breakdown tables. */
+export const CONFIDENCE_ORDER: Confidence[] = [
+  "confirmed",
+  "observed",
+  "hypothesized",
+];
+
 /**
- * Start at 100 and subtract per-finding severity weights, dampened by
- * 1/sqrt(n) for the nth occurrence of the same ruleId so a single noisy
- * rule doesn't dominate the score. Clamped to [0, 100].
+ * Whether the grade is forced to F regardless of the numeric score.
+ *
+ * Stated as its own rule on purpose, and NOT left to fall out of the
+ * arithmetic. With today's three numbers it happens to be redundant: a
+ * confirmed finding is always critical, and 50 x 1.25 = 62.5 already
+ * exceeds the 60 points that separate F from D. But that is an emergent
+ * property of three constants that live in three different places, and the
+ * way it breaks is silent — the day palar grows a confirmed finding class
+ * that is not `critical` (a confirmed information disclosure at `high`, say:
+ * 30 x 1.25 = 37.5, which grades C), a callback-proven defect would quietly
+ * start passing a `C`-threshold gate.
+ *
+ * So the guarantee is written down where it can be tested directly:
+ * anything palar watched happen is a settled result, and a settled result
+ * is not a matter of degree.
+ */
+function confirmedForcesF(findings: Finding[]): boolean {
+  return findings.some((finding) => finding.confidence === "confirmed");
+}
+
+/**
+ * The mirror of confirmedForcesF(): inference alone cannot produce an F.
+ *
+ * F is a "do not ship this" verdict, and palar should not issue one on the
+ * strength of findings that, by their own text, are guesses about code it
+ * never read. That is the same discipline that makes it refuse to score a
+ * target it never examined — and the two rules are deliberately symmetric:
+ *
+ *   evidence can force the worst grade; inference cannot.
+ *
+ * Without this the multiplier only postpones the problem it was introduced
+ * to fix. 0.25 keeps eleven unverified mediums (server-filesystem) at a B,
+ * but the per-rule dampening sums to 2*sqrt(n) rather than converging, so
+ * ~65 of them land back in F with nothing having been demonstrated about
+ * any of them. No server in the sample is near that; a large enough
+ * generated tool surface would be.
+ *
+ * D rather than C as the floor: a pile of unverified execution-adjacent
+ * fields IS a large attack surface and the grade should say so loudly. It
+ * just must not say "proven bad", which is what F means once CONFIRMED
+ * exists as a category.
+ *
+ * Applies only when EVERY finding is hypothesized. One observed finding —
+ * a real credential in the file, a real bidi override — is a fact, and
+ * facts are allowed to carry a result to F on their own.
+ */
+function hypothesisOnlyFloor(findings: Finding[]): boolean {
+  return (
+    findings.length > 0 && findings.every((finding) => finding.confidence === "hypothesized")
+  );
+}
+
+/**
+ * Start at 100 and subtract per-finding severity weight scaled by
+ * confidence, dampened by 1/sqrt(n) for the nth occurrence of the same
+ * ruleId so a single noisy rule doesn't dominate. Clamped to [0, 100].
+ *
+ * The dampening stays keyed on ruleId alone rather than on (ruleId,
+ * confidence): a rule's confidence is a property of the rule, so the pair
+ * would never differ within one ruleId today, and keying on it would
+ * quietly change the dampening the day it did.
  */
 export function computeScore(findings: Finding[]): AuditScore {
   const occurrences = new Map<string, number>();
@@ -38,10 +139,23 @@ export function computeScore(findings: Finding[]): AuditScore {
   for (const finding of findings) {
     const n = (occurrences.get(finding.ruleId) ?? 0) + 1;
     occurrences.set(finding.ruleId, n);
-    penalty += SEVERITY_WEIGHTS[finding.severity] / Math.sqrt(n);
+    penalty +=
+      (SEVERITY_WEIGHTS[finding.severity] * CONFIDENCE_MULTIPLIERS[finding.confidence]) /
+      Math.sqrt(n);
   }
   const value = Math.max(0, Math.min(100, Math.round(100 - penalty)));
-  return { value, grade: toGrade(value) };
+  // The numeric score is left exactly as computed even when the grade is
+  // clamped in either direction. It still ranks how much total exposure was
+  // found, which is information a reader wants, and rewriting it to agree
+  // with the letter would throw that away.
+  //
+  // Order matters only in the sense that the two clamps are mutually
+  // exclusive by construction: a result cannot both contain a confirmed
+  // finding and consist entirely of hypothesized ones.
+  if (confirmedForcesF(findings)) return { value, grade: "F" };
+  const grade = toGrade(value);
+  if (grade === "F" && hypothesisOnlyFloor(findings)) return { value, grade: "D" };
+  return { value, grade };
 }
 
 function toGrade(value: number): LetterGrade {
@@ -97,13 +211,38 @@ const OWASP_BETA_NOTE =
   "names and IDs are cited. References beginning `palar:` are internal " +
   "categories with no OWASP MCP Top 10 equivalent.";
 
+/** How each confidence reads in a heading — short, and not jargon. */
+const CONFIDENCE_LABELS: Record<Confidence, string> = {
+  confirmed: "CONFIRMED",
+  observed: "OBSERVED",
+  hypothesized: "UNVERIFIED",
+};
+
+/** One line each, so the breakdown table explains itself without the docs. */
+const CONFIDENCE_BLURBS: Record<Confidence, string> = {
+  confirmed:
+    "palar sent a payload and an out-of-band callback carrying that probe's nonce came back. " +
+    "Settled, not inferred.",
+  observed:
+    "the defect is present in the definition palar read — the characters, the credential, the " +
+    "declared host are really there. Not a guess, but also not a demonstrated runtime route.",
+  hypothesized:
+    "inferred from a field's name and shape. palar did not see this value reach anything, and " +
+    "cannot from a file alone. Worth looking at; not a demonstrated defect.",
+};
+
 function renderFinding(finding: Finding): string {
   const lines: string[] = [];
   const location = finding.location.jsonPath
     ? `${finding.location.file} → \`${finding.location.jsonPath}\``
     : finding.location.file;
+  // Confidence sits in the heading next to severity, not buried in a
+  // detail line. The pair is the claim — "[MEDIUM] this might reach a
+  // shell" and "[MEDIUM] this key is in your file" are different sentences,
+  // and a reader skimming headings has to be able to tell them apart.
   lines.push(
-    `### [${finding.severity.toUpperCase()}] ${finding.ruleId}: ${finding.title}`
+    `### [${finding.severity.toUpperCase()} · ${CONFIDENCE_LABELS[finding.confidence]}] ` +
+      `${finding.ruleId}: ${finding.title}`
   );
   lines.push("");
   lines.push(`- **Location:** ${location}`);
@@ -139,6 +278,37 @@ export function renderMarkdownReport(result: AuditResult): string {
     lines.push(`| ${severity} | ${count} |`);
   }
   lines.push("");
+
+  // Printed alongside severity rather than instead of it, because the two
+  // together are what the score is made of. A reader who sees 80/B on
+  // eleven findings should be able to see, in one table, that all eleven
+  // are unverified — that is the explanation for the grade, and without it
+  // the number looks arbitrary.
+  lines.push("## Findings by confidence");
+  lines.push("");
+  lines.push(
+    "What palar established, as distinct from how bad it would be. Severity and confidence " +
+      "are independent, and the score multiplies them: an unverified finding moves the grade " +
+      "a little, a confirmed one settles it."
+  );
+  lines.push("");
+  lines.push("| Confidence | Count | What it means |");
+  lines.push("| --- | --- | --- |");
+  for (const confidence of CONFIDENCE_ORDER) {
+    const count = result.findings.filter((f) => f.confidence === confidence).length;
+    lines.push(
+      `| ${CONFIDENCE_LABELS[confidence]} | ${count} | ${CONFIDENCE_BLURBS[confidence]} |`
+    );
+  }
+  lines.push("");
+  if (result.findings.some((f) => f.confidence === "confirmed")) {
+    lines.push(
+      "**This grade is F because something was CONFIRMED.** That is a rule, not an artefact " +
+        "of the arithmetic: palar watched this happen, and a settled result is not a matter " +
+        "of degree. The numeric score still ranks total exposure."
+    );
+    lines.push("");
+  }
 
   if (result.findings.length === 0) {
     lines.push("No findings. 🎉");

@@ -465,16 +465,17 @@ addLimitOptions(
   .option(
     "--connect-timeout-ms <n>",
     "--from-url/--from-command only: how long to wait for the connect/handshake " +
-      "(a --from-command target must start a container first)",
+      "(a --from-command target must start a container first, and some servers do work " +
+      "before answering `initialize` — desktop-commander takes ~46s)",
     positiveInt,
-    30_000
+    90_000
   )
   .option(
     "--timeout-ms <n>",
     "--from-url/--from-command only: hard ceiling for the whole enumeration; keep it above " +
       "--connect-timeout-ms or it preempts that one",
     positiveInt,
-    60_000
+    180_000
   )
   .option("--json", "output the raw AuditResult as JSON")
   .option("--out <file>", "write the report to a file instead of stdout")
@@ -538,6 +539,13 @@ addLimitOptions(
             `No MCP tool or server definition files found under: ${where}`
           )
         );
+        // Warnings first, then the generic hint. A named path that does not
+        // exist, or that palar declined to read, has a specific reason
+        // attached to it — printing the catch-all advice above that reason
+        // buries the one line that says what actually happened.
+        for (const warning of discovered.warnings) {
+          logStatus(chalk.dim(`warning: ${warning}`));
+        }
         logStatus(
           chalk.yellow(
             "Check the path, or that files match the expected naming patterns: " +
@@ -545,9 +553,6 @@ addLimitOptions(
               "mcp.server.json, mcp.config.json, *.mcp-server.json"
           )
         );
-        for (const warning of discovered.warnings) {
-          logStatus(chalk.dim(`warning: ${warning}`));
-        }
         if (opts.json || opts.out) {
           const doc: ScanJsonDocument = {
             outcome: "nothing-discovered",
@@ -702,12 +707,29 @@ addLimitOptions(
       "required: confirms you understand this spawns/connects to the target for real " +
         "(stdio targets sandboxed in a Docker container, not a VM — see --help)"
     )
-    .option("--timeout-ms <n>", "hard ceiling for the whole live scan per server", positiveInt, 60_000)
+    .option(
+      "--timeout-ms <n>",
+      "hard ceiling for the whole live scan per server (connect + listTools + every probe); " +
+        "keep it above --connect-timeout-ms or it preempts that one",
+      positiveInt,
+      180_000
+    )
     .option(
       "--connect-timeout-ms <n>",
-      "how long to wait for a target's connect/handshake (stdio targets must start a container first)",
+      "how long to wait for the TARGET to answer the MCP handshake. For a stdio target the " +
+        "clock starts once its container is running, so palar's own container start is not " +
+        "charged to it (see --container-start-timeout-ms). Some servers do real work before " +
+        "answering `initialize` — desktop-commander takes ~44-53s",
       positiveInt,
-      30_000
+      90_000
+    )
+    .option(
+      "--container-start-timeout-ms <n>",
+      "how long to wait for palar's OWN sandbox container to reach a running state, before " +
+        "the target's clock starts. This measures this machine's Docker daemon, not the " +
+        "server — a warm daemon does it in under 2s, a cold one can take far longer",
+      positiveInt,
+      120_000
     )
     .option(
       "--callback-timeout-ms <n>",
@@ -730,6 +752,7 @@ addLimitOptions(
       execute?: boolean;
       timeoutMs: number;
       connectTimeoutMs: number;
+      containerStartTimeoutMs: number;
       callbackTimeoutMs: number;
       oracleHost: string;
       json?: boolean;
@@ -847,8 +870,18 @@ addLimitOptions(
           targetDir: dirname(file),
           overallTimeoutMs: opts.timeoutMs,
           connectTimeoutMs: opts.connectTimeoutMs,
+          containerStartTimeoutMs: opts.containerStartTimeoutMs,
           callbackTimeoutMs: opts.callbackTimeoutMs,
           oracleHost: opts.oracleHost,
+          // First run only, and otherwise entirely silent for minutes.
+          onImageBuild: (image) =>
+            logStatus(
+              chalk.yellow(
+                `building the sandbox image ${image} — first run only. This fetches a base ` +
+                  `image and can take several minutes; it is palar setting itself up, not ` +
+                  `the target being slow, and it is not bounded by --timeout-ms.`
+              )
+            ),
         });
 
         if (live.probes.some((p) => p.status === "confirmed")) anyConfirmed = true;
@@ -876,6 +909,13 @@ addLimitOptions(
         );
       }
 
+      // How much of this run actually spoke to a target. Reaching one is
+      // the only thing that makes a live verdict meaningful, so it is
+      // computed once here and drives the document shape, the status lines
+      // and the exit code alike rather than being re-derived three times.
+      const unreached = liveResults.filter((live) => live.outcome !== "probed");
+      const reachedAny = unreached.length < liveResults.length;
+
       const reports = opts.json
         ? []
         : liveResults.map((live) => renderLiveMarkdownReport(escalated, live));
@@ -883,8 +923,30 @@ addLimitOptions(
       // One JSON document for the whole run (never multiple concatenated
       // objects, even with several discovered servers) so --json output stays
       // parseable by a single JSON.parse().
+      //
+      // The `outcome` field is additive on the shape that already existed;
+      // the score is not. When NOT ONE target was reached, the emitted
+      // static result carries no `score` at all — the same rule
+      // ScanJsonDocument states, for the same reason. `palar live`'s whole
+      // claim is about what a running server does, and a run that spoke to
+      // no running server has no verdict to summarise into a grade. The
+      // findings stay: they are observations about files palar really did
+      // read, and they stand on their own. A grade does not, because a CI
+      // job reads a grade as the answer to "did this pass?" — and 85/B for
+      // a target that never started is that question answered wrong.
+      const document = reachedAny
+        ? {
+            outcome: unreached.length > 0 ? ("partial" as const) : ("probed" as const),
+            static: escalated,
+            live: liveResults,
+          }
+        : {
+            outcome: "never-reached" as const,
+            static: { ...escalated, score: undefined },
+            live: liveResults,
+          };
       const output = opts.json
-        ? JSON.stringify({ static: escalated, live: liveResults }, null, 2)
+        ? JSON.stringify(document, null, 2)
         : reports.join("\n");
 
       if (opts.out) {
@@ -894,19 +956,46 @@ addLimitOptions(
         console.log(output);
       }
 
+      // Every unreached target is named on its own line, whatever the exit
+      // code turns out to be. On a mixed run the code is decided by the
+      // servers that DID answer, and without this the ones that did not
+      // would be visible only to a reader of the full report — which is how
+      // a target that silently produced nothing stays silent.
+      for (const live of unreached) {
+        logStatus(
+          chalk.red(
+            live.outcome === "never-reached"
+              ? `NEVER REACHED "${live.serverName}": ${live.unreachable?.reason ?? "unknown reason"}`
+              : `NO TOOLS from "${live.serverName}": it completed the MCP handshake and ` +
+                  "reported zero tools, so there was nothing to probe."
+          )
+        );
+      }
+
       // Exit codes, in precedence order. A confirmed finding outranks
       // everything: it is a result, and a result beats a report about
       // coverage.
       //
       //   1 — something was CONFIRMED by an oracle callback.
-      //   2 — probes were attempted and every one of them was NOT TESTED.
-      //       Nothing was exercised, so nothing is known. Same category as
-      //       `scan`'s never-reached, and given the same code for the same
-      //       reason: a scan that examined nothing must not exit 0
-      //       alongside a scan that examined everything and found it
-      //       clean.
-      //   0 — probes ran. Partial coverage is a warning, not a failure:
-      //       whatever did run really ran, and its findings stand.
+      //   2 — palar examined nothing. Three ways to arrive here, all the
+      //       same event: no target was reached at all, every target that
+      //       was reached exposed zero tools, or probes were attempted and
+      //       every one of them was NOT TESTED. Same category as `scan`'s
+      //       never-reached and given the same code for the same reason —
+      //       a scan that examined nothing must not exit 0 alongside a
+      //       scan that examined everything and found it clean.
+      //   0 — at least one target was reached and probing really happened.
+      //       Partial coverage is a warning, not a failure: whatever did
+      //       run really ran, and its findings stand.
+      //
+      // 2 was already this command's "nothing was learned" code, so the
+      // never-reached case widens a meaning that already exists rather than
+      // claiming a new number. The code that could NOT be reused is 1: in
+      // `scan` it means "reached, zero tools", and here it means "something
+      // was CONFIRMED". Those are separate commands with separate
+      // contracts, and `live`'s 1 is the load-bearing one for a CI gate —
+      // so `live` folds its own zero-tools case into 2 rather than matching
+      // `scan`'s numbering and turning a coverage gap into a confirmation.
       const allProbes = liveResults.flatMap((live) => live.probes);
       const notTested = allProbes.filter((p) => p.status === "not-tested");
 
@@ -915,6 +1004,17 @@ addLimitOptions(
           chalk.red("Failing: at least one finding was CONFIRMED via oracle callback")
         );
         process.exitCode = 1;
+      } else if (!reachedAny) {
+        process.exitCode = 2;
+        logStatus(
+          chalk.red(
+            `Failing: palar reached none of the ${liveResults.length} discovered server(s), so ` +
+              `no tool was exercised and no probe was sent. No score is reported: palar ` +
+              `examined nothing, which is not the same as finding nothing. The static findings ` +
+              `describe the definition FILES only — they say nothing about the running server, ` +
+              `which is the only thing this command exists to check.`
+          )
+        );
       } else if (allProbes.length > 0 && notTested.length === allProbes.length) {
         process.exitCode = 2;
         logStatus(

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { computeScore } from "./compliance.js";
 import type {
+  Confidence,
   Finding,
   MCPServerConfig,
   MCPToolDefinition,
@@ -14,11 +15,16 @@ import { textSanitizerRule } from "../rules/text-sanitizer.js";
 import { credentialScannerToolRule } from "../rules/credential-scanner.js";
 import { networkBoundsRule } from "../rules/network-bounds.js";
 
-function mkFinding(ruleId: string, severity: Severity = "high"): Finding {
+function mkFinding(
+  ruleId: string,
+  severity: Severity = "high",
+  confidence: Confidence = "observed"
+): Finding {
   return {
     ruleId,
     pillar: "schema-integrity",
     severity,
+    confidence,
     title: "t",
     detail: "d",
     location: { file: "f.json" },
@@ -54,9 +60,10 @@ test("info findings carry no penalty", () => {
 test("dampening: 3 highs from one rule score higher than from three rules", () => {
   const sameRule = computeScore([mkFinding("X"), mkFinding("X"), mkFinding("X")]);
   const threeRules = computeScore([mkFinding("X"), mkFinding("Y"), mkFinding("Z")]);
-  // 100 - 30*(1 + 1/sqrt(2) + 1/sqrt(3)) rounds to 31; 100 - 3*30 = 10.
-  assert.equal(sameRule.value, 31);
-  assert.equal(threeRules.value, 10);
+  // Weight per finding is high(30) x observed(0.6) = 18.
+  // 100 - 18*(1 + 1/sqrt(2) + 1/sqrt(3)) rounds to 59; 100 - 3*18 = 46.
+  assert.equal(sameRule.value, 59);
+  assert.equal(threeRules.value, 46);
   assert.ok(sameRule.value > threeRules.value);
 });
 
