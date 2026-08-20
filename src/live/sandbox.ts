@@ -76,6 +76,13 @@
  *     and no lock file. That date is the age of the evidence: nothing has
  *     re-checked it since, and nothing will on its own.
  *
+ *     The check is scripts/desktop-canary.sh. It encodes the reasoning as
+ *     well as the steps — in particular that the sentinel must be proven
+ *     alive AFTER the run as well as before, since a listener that died
+ *     mid-run yields the same ECONNREFUSED as a working REJECT rule and
+ *     would pass the negative control for entirely the wrong reason. Re-run
+ *     it and update this date and README.md together.
+ *
  * That asymmetry is structural, not an unfinished chore. Docker Desktop
  * cannot get an equivalent canary because no hosted CI runner offers that
  * backend — GitHub's are native-Engine VMs, which is exactly why the canary

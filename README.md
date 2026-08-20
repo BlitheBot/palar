@@ -581,8 +581,12 @@ Named gaps, not silently deferred:
   `ECONNREFUSED` in 7ms — a REJECT signature, not a DROP timeout; and
   `dns.lookup()` failing `EAI_AGAIN` in 23ms, the fast shape
   `BLACKHOLE_DNS` predicts rather than the slow one that would indicate a
-  resolver genuinely reaching out. What the canary does *not* cover: it
-  exercises one host
+  resolver genuinely reaching out. That check is
+  [`scripts/desktop-canary.sh`](scripts/desktop-canary.sh) — run it to
+  reproduce those values, and update this date and the one in
+  `src/live/sandbox.ts` when you do. It refuses to run on any backend other
+  than Docker Desktop, so a green result can never be filed against the
+  wrong one. What the canary does *not* cover: it exercises one host
   netfilter configuration (Ubuntu 24.04, where `iptables` is the nft-backed
   shim and dockerd follows it). Hosts that resolve `iptables` to the legacy
   backend, or that have no iptables compatibility layer at all — where these
