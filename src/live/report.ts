@@ -3,9 +3,17 @@
  * AuditResult for display purposes only — the static Finding[] array
  * itself is never mutated (see types.ts docstring for why).
  *
- * The whole point of this pass: CONFIRMED, ATTEMPTED-REJECTED,
+ * The whole point of this pass: CONFIRMED, NOT-TESTED, ATTEMPTED-REJECTED,
  * ATTEMPTED-UNCONFIRMED, and STATIC-ONLY are kept as visibly separate
  * sections, never flattened back into one undifferentiated finding list.
+ * They are printed in the same order status.ts resolves them, so the
+ * strongest claim is always the one at the top.
+ *
+ * NOT TESTED is not a result at all and is worded so it cannot be read as
+ * one: the probe's call failed with palar's own arguments already known to
+ * violate the target's published schema, so the field was never exercised.
+ * Its static finding stays listed under STATIC-ONLY for that reason — the
+ * live pass produced no coverage of it.
  *
  * REJECTED is a provenance label, not a verdict (see status.ts): the probe
  * ran, the target answered, and the answer was an error result. It does not
@@ -39,9 +47,22 @@ function formatCodePoint(cp: number): string {
 
 const PROBE_LABELS: Record<LiveProbeResult["status"], string> = {
   confirmed: "CONFIRMED",
+  "not-tested": "NOT TESTED — PALAR'S OWN ARGUMENTS WERE INVALID",
   rejected: "ATTEMPTED — REJECTED BY TARGET",
   unconfirmed: "ATTEMPTED — UNCONFIRMED",
 };
+
+function renderArgumentIssues(p: LiveProbeResult): string[] {
+  if (p.argumentIssues.length === 0) return [];
+  const lines: string[] = [""];
+  lines.push("  Constraints palar could not satisfy in this call:");
+  for (const i of p.argumentIssues) {
+    lines.push(
+      `  - \`${i.fieldPath}\`${i.isTarget ? " (the probed field itself)" : ""} ${i.detail}`
+    );
+  }
+  return lines;
+}
 
 function renderProbe(p: LiveProbeResult): string {
   const lines: string[] = [];
@@ -67,7 +88,28 @@ function renderProbe(p: LiveProbeResult): string {
         : `Tool call response${call.isError ? " (isError=true)" : ""}`;
     lines.push(`- **${heading}:** ${call.textPreview || "(empty)"}`);
   }
-  if (p.status === "rejected") {
+  // Listed for every status, not only not-tested: on a probe that
+  // succeeded anyway it is the observation that the target does not
+  // enforce a constraint it advertises, which is worth seeing.
+  lines.push(...renderArgumentIssues(p));
+  if (p.status === "not-tested") {
+    lines.push("");
+    lines.push(
+      "  This call failed, and palar's own arguments already violated the schema this target " +
+        "published — so the failure is explained without the payload, and the probed field was " +
+        "never exercised. Nothing here is evidence about the target either way: it is neither a " +
+        "refusal nor a clean result, and the static finding stands exactly as it did before the " +
+        "scan ran."
+    );
+    lines.push("");
+    lines.push(
+      "  The mismatch is computed from the target's declared schema before the call is sent, " +
+        "not read out of the error text above. That makes it exact for constraints the target " +
+        "DECLARED and blind to ones it only enforces — a probe bounced by an undeclared rule " +
+        "still reads REJECTED, because separating those would mean guessing from free-form " +
+        "error strings."
+    );
+  } else if (p.status === "rejected") {
     lines.push("");
     lines.push(
       "  The target returned an error result for this payload, quoted verbatim above. That " +
@@ -78,11 +120,13 @@ function renderProbe(p: LiveProbeResult): string {
     lines.push("");
     lines.push(
       "  Read the response text to tell these apart — the status alone cannot, and palar " +
-        "does not guess: (1) input validation rejected the payload; (2) argument/schema " +
-        "validation bounced the call before the tool's handler ever ran; (3) the handler ran " +
-        "and refused for an unrelated reason; (4) the injected command RAN and exited " +
-        "nonzero. Case (4) is evidence FOR injection, and it reaches this section only when " +
-        "no callback arrived to prove it — had one arrived, this would read CONFIRMED."
+        "does not guess: (1) input validation rejected the payload; (2) validation bounced " +
+        "the call on a rule the schema never declared, before the tool's handler ever ran " +
+        "(a bounce on a DECLARED rule is caught before sending and reads NOT TESTED " +
+        "instead); (3) the handler ran and refused for an unrelated reason; (4) the injected " +
+        "command RAN and exited nonzero. Case (4) is evidence FOR injection, and it reaches " +
+        "this section only when no callback arrived to prove it — had one arrived, this " +
+        "would read CONFIRMED."
     );
   } else if (p.status === "unconfirmed") {
     lines.push("");
@@ -182,6 +226,7 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   }
 
   const confirmed = live.probes.filter((p) => p.status === "confirmed");
+  const notTested = live.probes.filter((p) => p.status === "not-tested");
   const rejected = live.probes.filter((p) => p.status === "rejected");
   const unconfirmed = live.probes.filter((p) => p.status === "unconfirmed");
 
@@ -212,6 +257,32 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
     }
   }
 
+  lines.push("## NOT TESTED — the probe never reached the field");
+  lines.push("");
+  lines.push(
+    `${notTested.length} probe(s) whose call failed while palar's own arguments already ` +
+      `violated the schema this target published. The failure is explained by palar's input, ` +
+      `so the probed field was never exercised and NOTHING was learned about it. These are ` +
+      `not results: read them as coverage palar did not achieve.`
+  );
+  lines.push("");
+  lines.push(
+    `Reported separately rather than as rejections because the difference matters in exactly ` +
+      `the wrong direction: a probe that dies on palar's filler value looks, in the REJECTED ` +
+      `section, like a target that pushed back. Each entry's static finding therefore also ` +
+      `stays listed under STATIC-ONLY below — the live pass did not settle it.`
+  );
+  lines.push("");
+  if (notTested.length === 0) {
+    lines.push("None.");
+    lines.push("");
+  } else {
+    for (const p of notTested) {
+      lines.push(renderProbe(p));
+      lines.push("");
+    }
+  }
+
   lines.push("## ATTEMPTED — REJECTED BY TARGET");
   lines.push("");
   lines.push(
@@ -224,9 +295,10 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   lines.push(
     `This is NOT a clean bill of health and no severity was changed on account of it. The ` +
       `target refused these specific payloads; it may well accept others. Each entry quotes ` +
-      `the target's own error text, which is the only thing that distinguishes an ` +
-      `argument-validation bounce from a handler-level refusal — and from an injected command ` +
-      `that ran and exited nonzero.`
+      `the target's own error text, which is the only thing that distinguishes a bounce on a ` +
+      `rule the schema never declared from a handler-level refusal — and from an injected ` +
+      `command that ran and exited nonzero. A bounce on a rule the target DID declare is ` +
+      `caught before the call is sent and appears under NOT TESTED, not here.`
   );
   lines.push("");
   if (rejected.length === 0) {
@@ -257,7 +329,16 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
     }
   }
 
-  const probedPairs = new Set(live.probes.map((p) => `${p.toolName}::${p.fieldPath}`));
+  // A not-tested probe is deliberately NOT counted as coverage here: its
+  // call never reached the field, so the static finding on that field is
+  // still unsettled and belongs in the unexamined bucket. It appears in
+  // both sections — once with the evidence of what went wrong, once in the
+  // list of what remains unverified — which is the honest pair.
+  const probedPairs = new Set(
+    live.probes
+      .filter((p) => p.status !== "not-tested")
+      .map((p) => `${p.toolName}::${p.fieldPath}`)
+  );
   const poisonedTools = new Set(live.poisoningChecks.map((c) => c.toolName));
   const staticOnly = staticResult.findings.filter((f: Finding) => {
     const tf = parseToolFieldPath(f.location.jsonPath);
@@ -272,7 +353,9 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   lines.push(
     `${staticOnly.length} finding(s) from the static analyzer with no dynamic confirmation ` +
       `attempted in this pass (credential scanning, network-posture config, schema meta-` +
-      `validation, description hygiene, and non-top-level or non-string-keyword fields).`
+      `validation, description hygiene, and non-top-level or non-string-keyword fields) — ` +
+      `plus any field whose probe is listed under NOT TESTED above, since that probe never ` +
+      `reached it.`
   );
   lines.push("");
   for (const f of staticOnly) {

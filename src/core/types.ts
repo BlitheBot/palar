@@ -8,6 +8,8 @@ export interface JSONSchemaProperty {
   type?: string;
   description?: string;
   enum?: unknown[];
+  /** JSON Schema draft-6+ single permitted value. Narrows a field to exactly one string. */
+  const?: unknown;
   default?: unknown;
   items?: JSONSchemaProperty;
   properties?: Record<string, JSONSchemaProperty>;
@@ -127,3 +129,33 @@ export interface AuditResult {
   /** Discovery-time warnings (malformed or skipped files). */
   warnings: string[];
 }
+
+/**
+ * What `palar scan --json` writes to stdout.
+ *
+ * A discriminated union, because a scan has more outcomes than "here are
+ * the findings" and they must not be encoded as a findings list that
+ * happens to be empty. Every case where palar examined nothing carries
+ * **no `score` field at all** — the alternative is what `scan --json`
+ * used to do on an empty directory: emit 100/100 grade A, which is a
+ * statement about definitions that were never read. An absent score cannot
+ * be misread; a perfect one for zero inputs is read exactly wrong, and it
+ * is read that way by the CI job that treats it as a passing gate.
+ *
+ * `examined` carries the full AuditResult inline, so existing consumers
+ * that reach straight for `.score` or `.findings` keep working — the
+ * `outcome` field is additive on that case and load-bearing on the others.
+ */
+export type ScanJsonDocument =
+  | ({ outcome: "examined" } & AuditResult)
+  /** Nothing on disk matched the discovery patterns under the given roots. */
+  | {
+      outcome: "nothing-discovered";
+      timestamp: string;
+      searched: string[];
+      warnings: string[];
+    }
+  /** A live source answered the handshake and reported zero tools. */
+  | { outcome: "no-tools"; timestamp: string; source: string }
+  /** A live source was never reached at all, so nothing is known about it. */
+  | { outcome: "never-reached"; timestamp: string; source: string; error: string };

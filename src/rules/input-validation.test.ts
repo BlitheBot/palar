@@ -15,14 +15,51 @@ test("constrained sensitive fields produce no finding", () => {
       properties: {
         command: { type: "string", enum: ["build", "release"] },
         path: { type: "string", pattern: "^/safe/" },
-        url: { type: "string", format: "uri" },
+        mode: { type: "string", const: "readonly" },
       },
     },
   });
   assert.deepEqual(findings, []);
 });
 
-test("unconstrained sensitive string produces IV-001", () => {
+test("format does NOT suppress IV-001 — it annotates a shape, it does not narrow values", () => {
+  // mcp-server-fetch's actual schema. `format: "uri"` excludes strings that
+  // are not URIs, which is precisely not the dangerous set:
+  // http://169.254.169.254/latest/meta-data/ is a perfectly valid URI.
+  // Counting it as a constraint silenced both the finding and the probe.
+  const findings = check({
+    name: "fetch",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", format: "uri", minLength: 1, title: "Url" },
+      },
+    },
+  });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["IV-001"]);
+});
+
+test("length bounds and documentation keywords do not suppress IV-001 either", () => {
+  const findings = check({
+    name: "deploy",
+    inputSchema: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          minLength: 1,
+          maxLength: 2048,
+          title: "Command",
+          description: "the command to run",
+          default: "ls",
+        },
+      },
+    },
+  });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["IV-001"]);
+});
+
+test("unconstrained sensitive string produces IV-001 at medium, worded as a hypothesis", () => {
   const findings = check({
     name: "deploy",
     inputSchema: {
@@ -33,7 +70,14 @@ test("unconstrained sensitive string produces IV-001", () => {
   assert.equal(findings.length, 1);
   const finding = findings[0]!;
   assert.equal(finding.ruleId, "IV-001");
-  assert.equal(finding.severity, "high");
+  // Not high. A field-name keyword cannot establish that a value reaches
+  // an interpreter, and high asserts a confidence the method lacks.
+  assert.equal(finding.severity, "medium");
+  assert.match(finding.title, /unverified/i);
+  assert.match(finding.detail, /hypothesis/i);
+  // The remediation must not imply a schema constraint is definitely the
+  // fix — for server-filesystem it would break the server.
+  assert.match(finding.remediation!, /defence in depth|neither necessary nor possible/i);
   assert.ok(finding.location.jsonPath?.endsWith("properties.command"));
 });
 
@@ -93,8 +137,32 @@ test("a trivial catch-all pattern on a sensitive field fires IV-003", () => {
       properties: { command: { type: "string", pattern: "^.*$" } },
     },
   });
+  // IV-003 owns the vacuous-pattern case; IV-001 steps aside so one field
+  // never produces two findings that say the same thing.
   assert.deepEqual(findings.map((f) => f.ruleId), ["IV-003"]);
   assert.equal(findings[0]!.severity, "medium");
+});
+
+test("a trivial pattern alongside a format still fires only IV-003", () => {
+  const findings = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: { url: { type: "string", pattern: ".*", format: "uri" } },
+    },
+  });
+  assert.deepEqual(findings.map((f) => f.ruleId), ["IV-003"]);
+});
+
+test("const alone constrains a sensitive field", () => {
+  const findings = check({
+    name: "t",
+    inputSchema: {
+      type: "object",
+      properties: { command: { type: "string", const: "status" } },
+    },
+  });
+  assert.deepEqual(findings, []);
 });
 
 test("a genuinely constraining pattern fires neither IV-001 nor IV-003", () => {

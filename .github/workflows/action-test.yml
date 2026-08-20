@@ -111,7 +111,13 @@ jobs:
           const fail = (title, detail) => failures.push({ title, detail });
 
           // The pinned expectation for examples/fixtures: 5 findings — 2
-          // critical, 3 high — across 2 tools and 1 server.
+          // critical, 2 high, 1 medium — across 2 tools and 1 server.
+          //
+          // IV-001 is medium rather than high on purpose: it decides
+          // "execution-adjacent" from a field NAME, which cannot establish
+          // that a value reaches an interpreter. A confirmed oracle
+          // callback in `palar live` escalates it to critical as IV-101;
+          // static analysis alone states the hypothesis and says so.
           //
           // This is a SNAPSHOT and behaves like one. A new rule that fires on
           // these fixtures WILL trip it, by design: the counts cannot tell
@@ -122,7 +128,7 @@ jobs:
           const EXPECTED = [
             ["CRITICAL", "NB-003"], // loopback host exposed — the critical the gate trips on
             ["CRITICAL", "TS-002"], // bidi override controls in a tool description
-            ["HIGH", "IV-001"], // unconstrained exec-adjacent string
+            ["MEDIUM", "IV-001"], // unconstrained potentially-sensitive string (hypothesis)
             ["HIGH", "NB-001"], // no egress filter declared
             ["HIGH", "NB-004"], // private-network host exposed
           ];

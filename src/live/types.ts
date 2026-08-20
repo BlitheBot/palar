@@ -5,15 +5,20 @@
  * are cross-referenced for display without merging their types).
  */
 import type { CallbackEvent } from "./oracle.js";
-import type { ProbeKind } from "./probes.js";
+import type { ProbeArgumentIssue, ProbeKind } from "./probes.js";
 
 /**
  * Outcome of a single probe. See status.ts for the strict resolution
  * order and, in particular, for why "rejected" is not a claim that the
  * target is safe (it spans four different situations, one of which is a
  * successful injection) and must never downgrade or suppress a finding.
+ *
+ * "not-tested" is the one status that is not about the target at all: it
+ * records that the call failed with palar's own arguments already known to
+ * violate the target's declared schema, so the probed field was never
+ * exercised and nothing was learned about it either way.
  */
-export type ProbeStatus = "confirmed" | "rejected" | "unconfirmed";
+export type ProbeStatus = "confirmed" | "not-tested" | "rejected" | "unconfirmed";
 
 export interface ToolCallCapture {
   isError?: boolean;
@@ -28,6 +33,13 @@ export interface LiveProbeResult {
   reason: string;
   payload: string;
   nonce: string;
+  /**
+   * Constraints the target's own declared schema places on this call's
+   * arguments that palar could not satisfy — computed before the call was
+   * sent, from the schema alone. Empty for a probe whose arguments were
+   * schema-valid, which is the normal case.
+   */
+  argumentIssues: ProbeArgumentIssue[];
   status: ProbeStatus;
   callback: CallbackEvent | null;
   callbackTimeoutMs: number;

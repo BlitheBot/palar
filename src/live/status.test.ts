@@ -1,15 +1,16 @@
 /**
  * Unit tests for probe status resolution.
  *
- * The ordering rule (confirmed > rejected > unconfirmed) is the whole
- * reason this module exists, so it is tested exhaustively over the
- * callback x isError matrix rather than only on the paths that happen to
- * occur against today's fixtures.
+ * The ordering rule (confirmed > not-tested > rejected > unconfirmed) is
+ * the whole reason this module exists, so it is tested exhaustively over
+ * the callback x isError matrix rather than only on the paths that happen
+ * to occur against today's fixtures.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveProbeStatus } from "./status.js";
 import type { CallbackEvent } from "./oracle.js";
+import type { ProbeArgumentIssue } from "./probes.js";
 import type { ToolCallCapture } from "./types.js";
 
 const CALLBACK: CallbackEvent = {
@@ -104,4 +105,60 @@ test("the full callback x isError matrix resolves as specified", () => {
     matrix.filter(([cb]) => cb !== null).every(([, , e]) => e === "confirmed"),
     true
   );
+});
+
+/**
+ * THE desktop-commander CASE.
+ *
+ * palar filled `origin: {"enum":["ui","llm"]}` with "palar-live-probe",
+ * zod threw at the top of the handler, and start_process.command — the one
+ * field in that server that genuinely reaches a shell — was reported as
+ * REJECTED BY TARGET. The target never saw the payload.
+ */
+const ISSUE: ProbeArgumentIssue = {
+  fieldPath: "origin",
+  isTarget: false,
+  detail: 'declares enum ["ui","llm"], which palar could not satisfy',
+};
+
+test("no callback + error result + palar's own arguments invalid => not-tested, NOT rejected", () => {
+  assert.equal(
+    resolveProbeStatus(null, errored, [ISSUE]),
+    "not-tested",
+    "labeling this 'rejected' credits the target with a refusal it never made"
+  );
+});
+
+test("not-tested also covers a transport-level bounce with invalid arguments", () => {
+  // A server that validates at the protocol layer answers -32602, which
+  // the SDK surfaces as a thrown error rather than an isError result.
+  // Same situation, different channel.
+  assert.equal(
+    resolveProbeStatus(null, { error: "MCP error -32602: Invalid arguments" }, [ISSUE]),
+    "not-tested"
+  );
+});
+
+test("a callback outranks invalid arguments — evidence still wins", () => {
+  // The target ignored the constraint it published, ran the payload, and
+  // called home. Whatever was wrong with palar's filler is now irrelevant.
+  assert.equal(resolveProbeStatus(CALLBACK, errored, [ISSUE]), "confirmed");
+  assert.equal(resolveProbeStatus(CALLBACK, { error: "boom" }, [ISSUE]), "confirmed");
+});
+
+test("invalid arguments the target ACCEPTED do not become not-tested", () => {
+  // The call succeeded, so the field really was exercised — the target
+  // simply does not enforce a constraint it advertises. Marking that
+  // not-tested would discard a real observation.
+  assert.equal(resolveProbeStatus(null, ok, [ISSUE]), "unconfirmed");
+  assert.equal(resolveProbeStatus(null, unset, [ISSUE]), "unconfirmed");
+});
+
+test("no argument issues => the previous three-way resolution is unchanged", () => {
+  // The new status is strictly additive: with nothing wrong in palar's own
+  // arguments, every outcome resolves exactly as it did before.
+  assert.equal(resolveProbeStatus(null, errored, []), "rejected");
+  assert.equal(resolveProbeStatus(null, { error: "boom" }, []), "unconfirmed");
+  assert.equal(resolveProbeStatus(null, ok, []), "unconfirmed");
+  assert.equal(resolveProbeStatus(CALLBACK, errored, []), "confirmed");
 });

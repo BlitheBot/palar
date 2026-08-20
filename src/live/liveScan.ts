@@ -41,9 +41,11 @@ import {
   buildCommandInjectionPayload,
   buildSsrfPayload,
   buildProbeArguments,
+  benignValueFor,
   type LiveTool,
   type FieldProbeTarget,
 } from "./probes.js";
+import { isConstrained } from "../rules/input-validation.js";
 import type { MCPServerConfig, MCPToolDefinition } from "../core/types.js";
 import type {
   LiveAuditResult,
@@ -120,7 +122,13 @@ async function runOneProbe(
     target.kind === "ssrf"
       ? buildSsrfPayload(callbackUrl)
       : buildCommandInjectionPayload("127.0.0.1", callbackUrl);
-  const args = buildProbeArguments(tool, target, payload);
+  // The plan carries the arguments AND whatever the target's declared
+  // schema demands of them that palar could not deliver. The probe is sent
+  // either way — a server that does not enforce its own declaration will
+  // run it, and a callback outranks everything — but the issues travel
+  // with the result so a failure is not misread as the target refusing the
+  // payload. See status.ts's "not-tested".
+  const { args, issues } = buildProbeArguments(tool, target, payload);
 
   const toolCall = await callToolSafely(connection, tool.name, args);
   const callback = await oracle.waitForCallback(nonce, callbackTimeoutMs);
@@ -132,7 +140,8 @@ async function runOneProbe(
     reason: target.reason,
     payload,
     nonce,
-    status: resolveProbeStatus(callback, toolCall),
+    argumentIssues: issues,
+    status: resolveProbeStatus(callback, toolCall, issues),
     callback,
     callbackTimeoutMs,
     toolCall,
@@ -153,10 +162,27 @@ async function runPoisoningCheck(
       ? staticDef.description === tool.description
       : null;
 
+  // Required properties only, and a benign sentence only where the schema
+  // actually accepts a free-form string — same reasoning as
+  // buildProbeArguments. Blanket-filling every property with a sentence
+  // bounced this call on any enum'd or non-string field, which made the
+  // captured "direct tool call response" an argument-validation error
+  // rather than the tool's own behavior.
   const properties = tool.inputSchema.properties ?? {};
+  const required = new Set(
+    Array.isArray(tool.inputSchema.required)
+      ? tool.inputSchema.required.filter((n): n is string => typeof n === "string")
+      : []
+  );
   const args: Record<string, unknown> = {};
   for (const name of Object.keys(properties)) {
-    args[name] = "This is a benign sentence for a live poisoning check. It has two sentences.";
+    if (!required.has(name)) continue;
+    const prop = properties[name];
+    const freeFormString =
+      typeof prop === "object" && prop !== null && prop.type === "string" && !isConstrained(prop);
+    args[name] = freeFormString
+      ? "This is a benign sentence for a live poisoning check. It has two sentences."
+      : benignValueFor(prop);
   }
 
   const toolCall = await callToolSafely(connection, tool.name, args);

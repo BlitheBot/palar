@@ -4,6 +4,11 @@
  *   - a rejected finding is never suppressed
  *   - a probe that NEVER RAN cannot be reported as rejected; its static
  *     finding stays in STATIC-ONLY untouched
+ *
+ * And around "not-tested", which is the same constraint one step further
+ * in: a probe that ran but died on palar's own arguments cannot be
+ * reported as rejected either, and — since it produced no coverage — its
+ * static finding also stays in STATIC-ONLY.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -41,6 +46,7 @@ function probe(over: Partial<LiveProbeResult>): LiveProbeResult {
     reason: "matched an execution-adjacent keyword",
     payload: "127.0.0.1; curl ...",
     nonce: "n1",
+    argumentIssues: [],
     status: "rejected",
     callback: null,
     callbackTimeoutMs: 4000,
@@ -144,4 +150,84 @@ test("rejected and unconfirmed are reported separately, not merged", () => {
   assert.match(md, /## ATTEMPTED — UNCONFIRMED\n\n1 probe\(s\)/);
   assert.match(md, /\[ATTEMPTED — REJECTED BY TARGET\] read_file\.path/);
   assert.match(md, /\[ATTEMPTED — UNCONFIRMED\] search_nodes\.query/);
+});
+
+/**
+ * THE desktop-commander CASE, at the reporting layer.
+ *
+ * The probe bounced on palar's own filler for `origin`, so it belongs in
+ * NOT TESTED — and, because nothing was learned, its static finding must
+ * also still be listed as unverified.
+ */
+function notTestedProbe(): LiveProbeResult {
+  return probe({
+    toolName: "start_process",
+    fieldPath: "command",
+    status: "not-tested",
+    argumentIssues: [
+      {
+        fieldPath: "origin",
+        isTarget: false,
+        detail: 'declares enum ["ui","llm"], which palar could not satisfy',
+      },
+    ],
+    toolCall: {
+      isError: true,
+      textPreview: 'Error: [{"code":"invalid_enum_value","path":["origin"]}]',
+    },
+  });
+}
+
+test("a not-tested probe renders in its own section, never as a rejection", () => {
+  const md = renderLiveMarkdownReport(
+    staticResult([finding("start_process", "command")]),
+    liveResult([notTestedProbe()])
+  );
+
+  assert.match(md, /## NOT TESTED — the probe never reached the field\n\n1 probe\(s\)/);
+  assert.match(md, /\[NOT TESTED — PALAR'S OWN ARGUMENTS WERE INVALID\] start_process\.command/);
+  // It must not be counted as, or rendered as, a refusal by the target.
+  assert.match(md, /## ATTEMPTED — REJECTED BY TARGET\n\n0 probe\(s\)/);
+  assert.doesNotMatch(md, /\[ATTEMPTED — REJECTED BY TARGET\] start_process\.command/);
+  // The constraint palar could not satisfy is named.
+  assert.match(md, /`origin`.*enum/);
+});
+
+test("a not-tested probe leaves its static finding listed under STATIC-ONLY", () => {
+  // The live pass produced no coverage of this field, so the finding is
+  // still unverified and must not vanish from the unexamined bucket.
+  const md = renderLiveMarkdownReport(
+    staticResult([finding("start_process", "command")]),
+    liveResult([notTestedProbe()])
+  );
+  assert.match(md, /## STATIC-ONLY[^]*\[HIGH\] IV-001/);
+});
+
+test("a probe that DID reach the field still clears its finding from STATIC-ONLY", () => {
+  // The complement of the test above: only not-tested is excluded from
+  // coverage, not every probe.
+  const md = renderLiveMarkdownReport(
+    staticResult([finding("read_file", "path")]),
+    liveResult([probe({})])
+  );
+  assert.doesNotMatch(md, /## STATIC-ONLY[^]*\[HIGH\] IV-001/);
+});
+
+test("NOT TESTED is printed above REJECTED, matching the resolution order", () => {
+  const md = renderLiveMarkdownReport(
+    staticResult([]),
+    liveResult([notTestedProbe(), probe({})])
+  );
+  assert.ok(
+    md.indexOf("## NOT TESTED") < md.indexOf("## ATTEMPTED — REJECTED BY TARGET"),
+    "the stronger claim must come first"
+  );
+  assert.match(md, /## NOT TESTED — the probe never reached the field\n\n1 probe\(s\)/);
+  assert.match(md, /## ATTEMPTED — REJECTED BY TARGET\n\n1 probe\(s\)/);
+});
+
+test("the not-tested section states that the signal is pre-flight, not parsed from error text", () => {
+  const md = renderLiveMarkdownReport(staticResult([]), liveResult([notTestedProbe()]));
+  assert.match(md, /before the call is sent/);
+  assert.match(md, /blind to ones it only enforces/);
 });

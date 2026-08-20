@@ -255,6 +255,38 @@ async function resolveDockerDesktopHostProxyIp(networkName: string): Promise<str
   return ip;
 }
 
+/**
+ * The `iptables` script installFirewall() runs, as a pure function of its
+ * inputs.
+ *
+ * Split out of installFirewall() so the *contents* of the rules can be
+ * asserted without a Docker daemon. The claim that an enumeration-only
+ * scan opens no hole in the egress firewall is a security claim, and a
+ * security claim that can only be checked by running Docker is a claim
+ * that mostly isn't checked.
+ */
+export function buildFirewallScript(spec: {
+  chainName: string;
+  subnet: string;
+  hostReachableIp: string;
+  allowPort: number | null;
+}): string {
+  return [
+    `iptables -N ${spec.chainName}`,
+    // Ordering matters: the ACCEPT, when there is one, must precede the
+    // catch-all REJECT. With allowPort === null the chain is REJECT-only.
+    ...(spec.allowPort === null
+      ? []
+      : [
+          `iptables -A ${spec.chainName} -d ${spec.hostReachableIp} -p tcp ` +
+            `--dport ${spec.allowPort} -j ACCEPT`,
+        ]),
+    `iptables -A ${spec.chainName} -j REJECT`,
+    `iptables -I DOCKER-USER -s ${spec.subnet} -j ${spec.chainName}`,
+    `iptables -I INPUT -s ${spec.subnet} -j ${spec.chainName}`,
+  ].join(" && ");
+}
+
 export class TargetSandbox {
   readonly id: string;
   readonly networkName: string;
@@ -318,13 +350,28 @@ export class TargetSandbox {
   }
 
   /**
-   * Installs egress control: a per-scan MCPG-<id> chain (ACCEPT to the
-   * oracle's port on whatever address containers reach the host through,
-   * REJECT everything else) plus jump rules into two shared chains.
+   * Installs egress control: a per-scan MCPG-<id> chain (REJECT everything,
+   * preceded by an ACCEPT for one host port when — and only when — this
+   * scan actually needs one) plus jump rules into two shared chains.
    * Keeping the ACCEPT/REJECT pair in a scan-owned chain, rather than
    * inline in those chains, limits concurrent-scan interference to the
    * jump-rule insert/delete — still shared, host-global mutable state, but
    * a much smaller footprint than editing them directly.
+   *
+   * `allowPort` is the oracle's port for a probing scan (`palar live`),
+   * which has to be able to receive its own out-of-band callback, and
+   * `null` for an enumeration-only scan (`palar scan --from-command`),
+   * which never calls a tool and therefore never needs a callback to
+   * arrive. Passing `null` installs the chain with **no ACCEPT hole at
+   * all**: nothing the container originates is permitted anywhere. That is
+   * strictly tighter than the probing case, and it is the default posture
+   * for any caller that does not have a specific reason to open a port —
+   * which is why the parameter is `number | null` rather than optional. An
+   * omitted argument would silently mean "no hole" for a caller that
+   * needed one, and the failure mode of a *missing* ACCEPT is a probe that
+   * reports UNCONFIRMED rather than an error, i.e. a wrong answer that
+   * looks like a right one. Making the choice explicit at every call site
+   * removes that shape entirely.
    *
    * Both jumps are required, because they cover disjoint traffic:
    *   - DOCKER-USER is only consulted for *forwarded* traffic (packets
@@ -344,7 +391,20 @@ export class TargetSandbox {
    * network, so it can only ever match traffic originating from this
    * sandbox — it does not filter anything else arriving at the host.
    */
-  async installFirewall(oraclePort: number): Promise<void> {
+  async installFirewall(allowPort: number | null): Promise<void> {
+    // Runtime half of the `number | null` contract above. TypeScript makes
+    // an omitted argument a compile error, but a JS caller (or an `as any`)
+    // still reaches here with `undefined`, and "undefined" must not quietly
+    // degrade into either interpretation — neither a missing ACCEPT for a
+    // scan that needed one, nor a hole opened on port NaN.
+    if (allowPort !== null && !Number.isInteger(allowPort)) {
+      throw new SandboxError(
+        "installFirewall() requires an explicit allow-port: a port number for a scan that must " +
+          "receive an oracle callback, or null for an enumeration-only scan that needs no egress " +
+          `at all (got ${String(allowPort)})`
+      );
+    }
+
     // Set before the script runs, not after it succeeds: if a later step in
     // the chain (e.g. the DOCKER-USER jump) fails after an earlier one
     // (e.g. `iptables -N`) already created state, teardown() still needs to
@@ -352,13 +412,12 @@ export class TargetSandbox {
     // is independently best-effort per step, so attempting it against
     // partially-created state is always safe.
     this.firewallInstalled = true;
-    const script = [
-      `iptables -N ${this.chainName}`,
-      `iptables -A ${this.chainName} -d ${this.hostReachableIp} -p tcp --dport ${oraclePort} -j ACCEPT`,
-      `iptables -A ${this.chainName} -j REJECT`,
-      `iptables -I DOCKER-USER -s ${this.subnet} -j ${this.chainName}`,
-      `iptables -I INPUT -s ${this.subnet} -j ${this.chainName}`,
-    ].join(" && ");
+    const script = buildFirewallScript({
+      chainName: this.chainName,
+      subnet: this.subnet,
+      hostReachableIp: this.hostReachableIp,
+      allowPort,
+    });
     await docker([
       "run",
       "--rm",
@@ -378,8 +437,25 @@ export class TargetSandbox {
    * required — without it stdin isn't kept open and StdioClientTransport's
    * pipe-based protocol breaks (a plain `docker run` with no -i/-t closes
    * stdin immediately).
+   *
+   * Refuses outright if installFirewall() has not run. This is the single
+   * chokepoint through which a target can be started at all — the argv it
+   * returns is the only thing connector.ts ever hands to `docker` — so
+   * putting the check here is what makes "the firewall cannot be skipped"
+   * a property of the code rather than of caller discipline. A caller that
+   * forgets, or a new call path added later that never learned the
+   * convention, gets a hard error instead of an unfirewalled container
+   * with full network reach that otherwise looks like a normal scan.
    */
   dockerRunArgs(server: MCPServerConfig, targetDir: string): string[] {
+    if (!this.firewallInstalled) {
+      throw new SandboxError(
+        `refusing to build a container command line for "${server.name}" before installFirewall() ` +
+          "has run — the target would start with unrestricted network egress. Call " +
+          "installFirewall(port) for a scan that needs an oracle callback, or installFirewall(null) " +
+          "for an enumeration-only scan."
+      );
+    }
     if (!server.command) {
       throw new SandboxError(`server "${server.name}" declares no "command" to run in the sandbox`);
     }
