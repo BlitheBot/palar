@@ -14,10 +14,10 @@ inputs:
       Version of palar to install (any npm version or dist-tag). Ignored
       when `binary` is set. Pinned to an exact version by default: a CI
       gate that can change its verdict without a change in this repository
-      is not a gate. Override it to float (`^0.2.0`, `latest`) if you
+      is not a gate. Override it to float (`^0.3.0`, `latest`) if you
       would rather pick up new releases automatically.
     required: false
-    default: "0.2.0"
+    default: "0.3.0"
   binary:
     description: >-
       An already-built palar executable to run instead of installing from
