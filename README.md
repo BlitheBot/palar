@@ -568,10 +568,21 @@ Named gaps, not silently deferred:
   port is unreachable from that same container. It also asserts DNS does not
   resolve inside the sandbox, and that no container, network, `MCPG-*` chain
   or lock file survives teardown. Docker Desktop (Windows/WSL2) was measured
-  by hand — same three observations, by dumping live netfilter state
-  mid-scan and probing from a second shell — but **as of 2026-07-30, with
-  nothing re-checking it since**; that date is the age of the evidence, and
-  it only gets older. What the canary does *not* cover: it exercises one host
+  by hand — same paired controls, by dumping live netfilter state mid-scan
+  and probing from inside the running sandbox — but **as of 2026-08-20,
+  with nothing re-checking it since**; that date is the age of the
+  evidence, and it only gets older. That measurement recorded: the scan’s
+  `MCPG-<id>` chain carrying exactly one `ACCEPT` (the oracle’s host:port
+  for that scan) followed by a catch-all
+  `REJECT --reject-with icmp-port-unreachable`, reached from both the
+  `DOCKER-USER` (forwarded) and `INPUT` (host-destined) hooks; 2 of 2
+  probes CONFIRMED by oracle callback; a host sentinel listener, verified
+  up before and after the run, refused from inside the sandbox with
+  `ECONNREFUSED` in 7ms — a REJECT signature, not a DROP timeout; and
+  `dns.lookup()` failing `EAI_AGAIN` in 23ms, the fast shape
+  `BLACKHOLE_DNS` predicts rather than the slow one that would indicate a
+  resolver genuinely reaching out. What the canary does *not* cover: it
+  exercises one host
   netfilter configuration (Ubuntu 24.04, where `iptables` is the nft-backed
   shim and dockerd follows it). Hosts that resolve `iptables` to the legacy
   backend, or that have no iptables compatibility layer at all — where these

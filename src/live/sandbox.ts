@@ -50,13 +50,31 @@
  *     that: 1 confirmed callback, sentinel connect refused, DNS lookup
  *     failed in 17ms, container found and probed, bridge gateway
  *     172.18.0.1.
- *   - Docker Desktop (Windows/WSL2): verified by hand as of 2026-07-30
- *     (commit 5ba1a5f, which added the INPUT hook and BLACKHOLE_DNS), not
- *     continuously. The same three observations (host-namespace listener
- *     unreachable, DNS resolution failing, oracle callback still landing)
- *     were made empirically by dumping live netfilter state mid-scan and
- *     probing from a second shell. That date is the age of the evidence:
- *     nothing has re-checked it since, and nothing will on its own.
+ *   - Docker Desktop (Windows/WSL2): verified by hand as of 2026-08-20,
+ *     not continuously. (Previously 2026-07-30, at commit 5ba1a5f, which
+ *     added the INPUT hook and BLACKHOLE_DNS; the re-run found no drift.)
+ *     The same paired controls the canary asserts were made empirically, by
+ *     dumping live netfilter state mid-scan and running a probe INSIDE the
+ *     running sandbox via docker exec. Measured on Docker Desktop
+ *     29.6.1 / WSL2 kernel 6.6.87.2:
+ *
+ *       MCPG-<id>  -d <hostProxyIp>/32 -p tcp --dport <oraclePort> -j ACCEPT
+ *       MCPG-<id>  -j REJECT --reject-with icmp-port-unreachable
+ *
+ *     jumped to from BOTH hooks — DOCKER-USER for forwarded traffic and
+ *     INPUT for host-destined — i.e. exactly one permitted destination and
+ *     a terminal REJECT for everything else. Positive control: 2 of 2
+ *     probes CONFIRMED, callbacks received at the oracle. Negative control:
+ *     a host sentinel on 0.0.0.0:19099, verified listening both before and
+ *     after the run, refused from inside the sandbox with ECONNREFUSED in
+ *     7ms. The refusal is what distinguishes REJECT from DROP: a DROP
+ *     presents as a 5s timeout, and the ICMP port-unreachable in the rule
+ *     above is what produces the immediate refusal instead. DNS: EAI_AGAIN
+ *     in 23ms — the fast shape BLACKHOLE_DNS predicts, not the slow
+ *     EAI_AGAIN that would mean a resolver was genuinely reaching out and
+ *     timing out. Teardown left 0 containers, 0 networks, 0 MCPG-* chains
+ *     and no lock file. That date is the age of the evidence: nothing has
+ *     re-checked it since, and nothing will on its own.
  *
  * That asymmetry is structural, not an unfinished chore. Docker Desktop
  * cannot get an equivalent canary because no hosted CI runner offers that
