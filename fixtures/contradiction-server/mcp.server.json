@@ -1,0 +1,10 @@
+{
+  "name": "contradiction-server",
+  "transport": "stdio",
+  "command": "node",
+  "args": [
+    "--import",
+    "tsx",
+    "src/index.ts"
+  ]
+}

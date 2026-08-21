@@ -3,9 +3,10 @@
  * AuditResult for display purposes only — the static Finding[] array
  * itself is never mutated (see types.ts docstring for why).
  *
- * The whole point of this pass: CONFIRMED, NOT-TESTED, ATTEMPTED-REJECTED,
- * ATTEMPTED-UNCONFIRMED, and STATIC-ONLY are kept as visibly separate
- * sections, never flattened back into one undifferentiated finding list.
+ * The whole point of this pass: CONFIRMED, CONTRADICTED DECLARATIONS,
+ * NOT-TESTED, ATTEMPTED-REJECTED, ATTEMPTED-UNCONFIRMED, and STATIC-ONLY
+ * are kept as visibly separate sections, never flattened back into one
+ * undifferentiated finding list.
  * They are printed in the same order status.ts resolves them, so the
  * strongest claim is always the one at the top.
  *
@@ -26,6 +27,7 @@
  * from the evidence, and palar does not guess on their behalf.
  */
 import type { AuditResult, Finding } from "../core/types.js";
+import { CONTRADICTION_RULE_ID } from "./annotation-contradiction.js";
 import type { LiveAuditResult, LiveProbeResult, PoisoningLiveCheck } from "./types.js";
 
 function parseToolFieldPath(jsonPath: string | undefined): { toolName: string; fieldPath: string } | null {
@@ -322,6 +324,40 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
     }
   }
 
+  // Placed here, directly under CONFIRMED, because it rests on the same
+  // callbacks and on nothing else. Its natural-looking home — the
+  // STATIC-ONLY list, which collects every finding no probe covered — is
+  // where it must NOT go: that section's heading says no live probe
+  // exists for the class, and this class exists only because one did.
+  const contradictions = staticResult.findings.filter(
+    (f: Finding) => f.ruleId === CONTRADICTION_RULE_ID
+  );
+  if (contradictions.length > 0) {
+    lines.push("## CONTRADICTED DECLARATIONS — the target's own annotations vs. what it did");
+    lines.push("");
+    lines.push(
+      `${contradictions.length} tool(s) whose declared MCP annotations are refuted by a ` +
+        `callback above. Both halves were read rather than inferred: the claim came from ` +
+        `the server's own listTools() response, and the behaviour from a nonce that ` +
+        `reached palar's listener. A hint the server never declared is never counted ` +
+        `here — there is no claim to contradict.`
+    );
+    lines.push("");
+    lines.push(
+      `This matters separately from the injection itself: annotations are what a client ` +
+        `reads to decide whether to ask you before calling a tool. A false one does not ` +
+        `just misdescribe the tool, it removes the prompt you would have declined at.`
+    );
+    lines.push("");
+    for (const f of contradictions) {
+      lines.push(`#### [${f.severity.toUpperCase()} · CONFIRMED] ${f.ruleId}: ${f.title}`);
+      lines.push("");
+      lines.push(`- ${f.detail}`);
+      if (f.remediation) lines.push(`- **Remediation:** ${f.remediation}`);
+      lines.push("");
+    }
+  }
+
   if (live.poisoningChecks.length > 0) {
     lines.push("## LIVE-VERIFIED — present on the running server (no oracle equivalent for this class)");
     lines.push("");
@@ -415,6 +451,10 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
   );
   const poisonedTools = new Set(live.poisoningChecks.map((c) => c.toolName));
   const staticOnly = staticResult.findings.filter((f: Finding) => {
+    // Rendered in full under CONTRADICTED DECLARATIONS above. Listing it
+    // here too would file a callback-proven finding under a heading that
+    // says no live probe exists for its class.
+    if (f.ruleId === CONTRADICTION_RULE_ID) return false;
     const tf = parseToolFieldPath(f.location.jsonPath);
     if (tf && probedPairs.has(`${tf.toolName}::${tf.fieldPath}`)) return false;
     const descTool = parseToolDescriptionPath(f.location.jsonPath);

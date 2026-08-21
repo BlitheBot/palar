@@ -1,0 +1,14 @@
+{
+  "name": "palar-contradiction-server-fixture",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Intentionally vulnerable MCP server fixture for palar TA-101 (annotation contradiction). Not published.",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}

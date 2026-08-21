@@ -4,6 +4,7 @@
  * contract is left untouched by this work (see report.ts for how the two
  * are cross-referenced for display without merging their types).
  */
+import type { MCPToolAnnotations } from "../core/types.js";
 import type { CallbackEvent } from "./oracle.js";
 import type { ProbeArgumentIssue, ProbeKind } from "./probes.js";
 
@@ -123,7 +124,19 @@ export interface LiveAuditResult {
    * `--connect-timeout-ms` bounds.
    */
   connectDurationMs: number;
-  liveTools: { name: string; description?: string }[];
+  /**
+   * What the server's own listTools() returned, including the claims it
+   * makes about each tool. The annotations are kept because a probe
+   * result is only half of a contradiction — the other half is what the
+   * tool declared about itself, and dropping it here would mean
+   * re-connecting to the target to ask again.
+   */
+  liveTools: {
+    name: string;
+    title?: string;
+    description?: string;
+    annotations?: MCPToolAnnotations;
+  }[];
   toolDrift: ToolDriftEntry[];
   probes: LiveProbeResult[];
   poisoningChecks: PoisoningLiveCheck[];

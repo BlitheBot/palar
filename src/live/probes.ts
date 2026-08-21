@@ -28,12 +28,20 @@ import {
   isTrivialPattern,
 } from "../rules/input-validation.js";
 import { DEFAULT_CONFIG, parseCodePointRanges } from "../core/config.js";
-import type { JSONSchemaProperty } from "../core/types.js";
+import type { JSONSchemaProperty, MCPToolAnnotations } from "../core/types.js";
 
 /** Minimal shape of a tool as returned by the live Client.listTools() call. */
 export interface LiveTool {
   name: string;
+  /** Top-level display title. Read via core/annotations.ts, never directly. */
+  title?: string;
   description?: string;
+  /**
+   * The tool's own claims about what calling it does. Carried here so a
+   * confirmed probe can be checked against them — see
+   * live/annotation-contradiction.ts.
+   */
+  annotations?: MCPToolAnnotations;
   inputSchema: {
     type?: string;
     properties?: Record<string, JSONSchemaProperty>;

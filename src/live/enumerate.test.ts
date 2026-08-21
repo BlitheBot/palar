@@ -18,6 +18,7 @@ import {
   enumerateFromCommand,
   EnumerationPlanError,
   planContainerCommand,
+  toToolDefinitions,
   type EnumerationResult,
 } from "./enumerate.js";
 import { ScanLock, type ProcessProbe } from "./lock.js";
@@ -202,4 +203,60 @@ test("a Windows-style plan still emits POSIX container paths", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+/**
+ * Passthrough. These pin the contract toToolDefinitions()'s docstring
+ * states — every modelled field survives when present, and is omitted when
+ * absent — because the failure it guards against is silent and asymmetric:
+ * a field the JSON-file path can see and the live path cannot makes the two
+ * commands disagree about one server with no way to tell which is wrong.
+ */
+test("a live tool's title, annotations, and outputSchema all survive normalization", () => {
+  const [tool] = toToolDefinitions([
+    {
+      name: "probe_host",
+      title: "Check host reachability",
+      description: "Checks whether a host is reachable.",
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: { type: "object", properties: { hostname: { type: "string" } } },
+      outputSchema: { type: "object", properties: { reachable: { type: "boolean" } } },
+    },
+  ]);
+
+  assert.equal(tool!.title, "Check host reachability");
+  assert.deepEqual(tool!.annotations, { readOnlyHint: true, openWorldHint: false });
+  assert.deepEqual(tool!.outputSchema, {
+    type: "object",
+    properties: { reachable: { type: "boolean" } },
+  });
+});
+
+test("the annotations.title position survives too", () => {
+  const [tool] = toToolDefinitions([
+    { name: "t", annotations: { title: "Label", openWorldHint: false } },
+  ]);
+  assert.equal(tool!.annotations?.title, "Label");
+});
+
+test("an unmodelled annotation is carried rather than stripped", () => {
+  // A hint palar has no model for is still the server's own claim; editing
+  // it out would mean palar reporting on its own paraphrase.
+  const [tool] = toToolDefinitions([
+    { name: "t", annotations: { readOnlyHint: true, vendorHint: "x" } },
+  ]);
+  assert.equal((tool!.annotations as Record<string, unknown>)["vendorHint"], "x");
+});
+
+test("absent optional fields are omitted, not filled in", () => {
+  const [tool] = toToolDefinitions([{ name: "t" }]);
+  assert.ok(!("title" in tool!), "title should be absent, not undefined-valued");
+  assert.ok(!("annotations" in tool!), "annotations should be absent");
+  assert.ok(!("outputSchema" in tool!), "outputSchema should be absent");
+  assert.ok(!("description" in tool!), "description should be absent");
+});
+
+test("non-object annotations are dropped rather than carried as garbage", () => {
+  const [tool] = toToolDefinitions([{ name: "t", annotations: "read-only" }]);
+  assert.ok(!("annotations" in tool!));
 });

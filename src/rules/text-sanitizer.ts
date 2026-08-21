@@ -1,14 +1,28 @@
 /**
- * TS: detects suspicious Unicode code points in tool names and descriptions —
+ * TS: detects suspicious Unicode code points in a tool's DISPLAY SURFACES —
  * invisible characters, bidi overrides, tag characters, and stray controls
  * that can hide or reorder text a human reviewer would otherwise see. The
  * rule only reports presence, counts, and code points; it never interprets
  * or reproduces the hidden content.
+ *
+ * There are three such surfaces, not two. `name` and `description` have
+ * always been scanned; `title` is scanned because it is what a client's UI
+ * actually RENDERS to the human doing the approving, and the spec warns in
+ * as many words that a title may not faithfully describe what the tool
+ * does. A tool whose name and description are clean and whose title hides
+ * a bidi override is a tool whose visible label lies to the only person in
+ * the loop.
+ *
+ * This is a widening of where the existing checks look, not a new check
+ * and not a check that was previously suppressed. On a benign server the
+ * expected result is zero additional findings — the same categories, three
+ * fields instead of two.
  */
 import type { Finding, MCPToolDefinition, Severity } from "../core/types.js";
 import type { RuleContext, ToolRule } from "./index.js";
 import type { UnicodeCategoryName } from "../core/config.js";
 import { DEFAULT_CONFIG, parseCodePointRanges } from "../core/config.js";
+import { titleField } from "../core/annotations.js";
 
 const COMPLIANCE_REFS = ["OWASP MCP03:2025 - Tool Poisoning"];
 
@@ -183,6 +197,19 @@ export const textSanitizerRule: ToolRule = {
         text: tool.description,
       });
     }
+    // Via the shared reader, so this fires on `annotations.title` and on
+    // the top-level `title` alike — both positions are in active use, and
+    // a rule that knew only one would clear half the servers that carry a
+    // title at all. The position is reported as the field name so the
+    // finding names the field the server actually wrote.
+    const title = titleField(tool);
+    if (title) {
+      fields.push({
+        fieldName: title.position,
+        jsonPath: `tools["${tool.name}"].${title.position}`,
+        text: title.text,
+      });
+    }
 
     for (const { fieldName, jsonPath, text } of fields) {
       for (const [category, { count, codePoints }] of scanField(text, categories)) {
@@ -203,7 +230,12 @@ export const textSanitizerRule: ToolRule = {
             `The "${fieldName}" field of tool "${tool.name}" contains ${count} ` +
             `occurrence(s) of ${category.label} (${points}). These code points ` +
             `can conceal or reorder text so that what a human reviewer sees ` +
-            `differs from what a model or parser receives.`,
+            `differs from what a model or parser receives.` +
+            (fieldName === "title" || fieldName === "annotations.title"
+              ? ` This field is the tool's display title — the string a client's UI ` +
+                `renders to the person approving the call — so concealment here is ` +
+                `aimed at the human in the loop rather than at the model.`
+              : ""),
           location: { file: ctx.file, jsonPath },
           remediation:
             `Strip or reject these code points from the "${fieldName}" field, and ` +

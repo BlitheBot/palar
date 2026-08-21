@@ -399,7 +399,17 @@ export async function runLiveScan(
 
     const listed = await connection.client.listTools();
     const liveTools = listed.tools as unknown as LiveTool[];
-    result.liveTools = liveTools.map((t) => ({ name: t.name, description: t.description }));
+    result.liveTools = liveTools.map((t) => ({
+      name: t.name,
+      ...(typeof t.title === "string" ? { title: t.title } : {}),
+      ...(typeof t.description === "string" ? { description: t.description } : {}),
+      // Spread in only when the server actually sent an annotations
+      // object, so "declared nothing" stays distinguishable from
+      // "declared an empty object" downstream.
+      ...(typeof t.annotations === "object" && t.annotations !== null
+        ? { annotations: t.annotations }
+        : {}),
+    }));
 
     // The one place the outcome is earned. Everything above this line can
     // fail in a way that means palar never spoke to the target; past it, a

@@ -36,6 +36,16 @@
  *     that no probe can ever produce, so they simply never match — which
  *     is correct, because they are never probed.
  *
+ * ## The second thing a callback establishes
+ *
+ * Escalating the field's own finding is not all a callback is good for.
+ * The same evidence also settles whether the tool's declared annotations
+ * were true, which is a separate defect with a separate consequence — see
+ * annotation-contradiction.ts. Those findings are appended here rather
+ * than rendered downstream for this module's founding reason: they change
+ * the score and what `--fail-on` gates on, so they have to reach the
+ * result before anything reads it.
+ *
  * The one case the key cannot cover is a confirmed probe with no finding
  * at that location. That should be impossible (probe selection and IV-001
  * share `matchesSensitiveKeyword` + `isConstrained`), but "impossible" is
@@ -46,6 +56,7 @@
  */
 import type { AuditResult, Finding } from "../core/types.js";
 import { computeScore } from "../core/compliance.js";
+import { annotationContradictionFindings } from "./annotation-contradiction.js";
 import type { LiveAuditResult, LiveProbeResult } from "./types.js";
 
 const CONFIRMED_RULE_ID = "IV-101";
@@ -171,7 +182,15 @@ export function escalateConfirmedFindings(
     }
   }
 
+  // Safe to return early: every finding this function can add — escalated,
+  // orphan, or contradiction — requires at least one confirmed probe, so
+  // there is nothing to add when there are none.
   if (confirmedByField.size === 0) return staticResult;
+
+  // The static findings are global to the discovered file set, so the
+  // first one's file is the best available label for a finding that came
+  // off the wire rather than out of a file. A live-only run has none.
+  const fallbackFile = staticResult.findings[0]?.location.file ?? "<live server>";
 
   const matched = new Set<string>();
   const findings = staticResult.findings.map((finding) => {
@@ -186,9 +205,18 @@ export function escalateConfirmedFindings(
 
   for (const [key, probe] of confirmedByField) {
     if (matched.has(key)) continue;
-    findings.push(
-      orphanConfirmedFinding(probe, staticResult.findings[0]?.location.file ?? "<live server>")
-    );
+    findings.push(orphanConfirmedFinding(probe, fallbackFile));
+  }
+
+  // A second, independent defect the same callbacks establish: a tool
+  // whose declared annotations say it could not have done what it just
+  // did. Appended here rather than rendered by report.ts for the reason
+  // this whole module exists — it changes the score and what --fail-on
+  // gates on, so it has to reach the result before anything reads it.
+  // See annotation-contradiction.ts for the per-kind table and for why
+  // it is `high` next to IV-101's `critical`.
+  for (const live of liveResults) {
+    findings.push(...annotationContradictionFindings(live, fallbackFile));
   }
 
   return {

@@ -182,3 +182,179 @@ test("duplicate tool name produces an overrides warning", () => {
   assert.ok(warnings[0]!.includes('duplicate tool name "dup"'));
   assert.ok(warnings[0]!.includes("second.json overrides the one from first.json"));
 });
+
+/**
+ * Annotation drift.
+ *
+ * `claim-relaxed` exists because the other three values describe a
+ * constraint the server enforces, and an annotation describes only what the
+ * server says about itself. These tests pin both that the label is applied
+ * where a rug pull is expressed in claims, and — more importantly — that it
+ * is NOT applied in the direction where a client ends up gating harder.
+ */
+function snapshotOf(definition: MCPToolDefinition) {
+  return buildSnapshot(discovered([{ file: "a.json", definition }])).snapshot;
+}
+
+const BASE_SCHEMA = {
+  type: "object",
+  properties: { hostname: { type: "string" } },
+  required: ["hostname"],
+};
+
+test("declaring readOnlyHint: true where nothing was declared is claim-relaxed", () => {
+  const before = snapshotOf({ name: "t", inputSchema: BASE_SCHEMA });
+  const after = snapshotOf({
+    name: "t",
+    annotations: { readOnlyHint: true },
+    inputSchema: BASE_SCHEMA,
+  });
+
+  const [entry] = diffSnapshotsDetailed(before, after);
+  assert.equal(entry!.kind, "regressed");
+  const change = entry!.changes.find((c) => c.description.includes("readOnlyHint"));
+  assert.equal(change!.classification, "claim-relaxed");
+  // Phrased as a claim, so a reader can tell it from a verified change
+  // without knowing the vocabulary.
+  assert.match(change!.description, /the server now claims readOnlyHint: true/);
+  assert.match(change!.description, /nothing enforces/);
+});
+
+test("flipping destructiveHint true -> false is claim-relaxed", () => {
+  const before = snapshotOf({
+    name: "t",
+    annotations: { destructiveHint: true },
+    inputSchema: BASE_SCHEMA,
+  });
+  const after = snapshotOf({
+    name: "t",
+    annotations: { destructiveHint: false },
+    inputSchema: BASE_SCHEMA,
+  });
+
+  const [entry] = diffSnapshotsDetailed(before, after);
+  assert.equal(entry!.kind, "regressed");
+  assert.match(entry!.reason!, /the server now claims destructiveHint: false/);
+  assert.match(entry!.reason!, /previously true/);
+});
+
+test("openWorldHint true -> false is claim-relaxed; the reverse is neutral", () => {
+  const closed = snapshotOf({
+    name: "t",
+    annotations: { openWorldHint: false },
+    inputSchema: BASE_SCHEMA,
+  });
+  const open = snapshotOf({
+    name: "t",
+    annotations: { openWorldHint: true },
+    inputSchema: BASE_SCHEMA,
+  });
+
+  const relaxing = diffSnapshotsDetailed(open, closed)[0]!;
+  assert.equal(relaxing.kind, "regressed");
+  assert.equal(
+    relaxing.changes.find((c) => c.description.includes("openWorldHint"))!.classification,
+    "claim-relaxed"
+  );
+
+  // A tool newly declaring itself open-world makes its client gate harder.
+  // No rug-pull shape, so no label — but the move is still recorded.
+  const widening = diffSnapshotsDetailed(closed, open)[0]!;
+  assert.equal(widening.kind, "changed");
+  assert.equal(
+    widening.changes.find((c) => c.description.includes("openWorldHint"))!.classification,
+    "neutral"
+  );
+});
+
+test("withdrawing a safety claim is neutral, not a regression", () => {
+  const claimed = snapshotOf({
+    name: "t",
+    annotations: { readOnlyHint: true },
+    inputSchema: BASE_SCHEMA,
+  });
+  const silent = snapshotOf({ name: "t", inputSchema: BASE_SCHEMA });
+
+  const [entry] = diffSnapshotsDetailed(claimed, silent);
+  assert.equal(entry!.kind, "changed");
+  const change = entry!.changes.find((c) => c.description.includes("readOnlyHint"))!;
+  assert.equal(change.classification, "neutral");
+  assert.match(change.description, /no longer declares readOnlyHint/);
+});
+
+test("a claim relaxation and a schema loosening both reach the reason line", () => {
+  const before = snapshotOf({
+    name: "t",
+    annotations: { readOnlyHint: false },
+    inputSchema: BASE_SCHEMA,
+  });
+  const after = snapshotOf({
+    name: "t",
+    annotations: { readOnlyHint: true },
+    inputSchema: { type: "object", properties: { hostname: { type: "string" } } },
+  });
+
+  const [entry] = diffSnapshotsDetailed(before, after);
+  assert.equal(entry!.kind, "regressed");
+  assert.match(entry!.reason!, /required flag removed/);
+  assert.match(entry!.reason!, /the server now claims readOnlyHint: true/);
+});
+
+test("an annotation-only flip is detected at all — the hash has to move", () => {
+  // The regression guard for the whole feature: without annotations in the
+  // hashed material, diffSnapshots() reports no change and nothing is ever
+  // compared.
+  const before = snapshotOf({ name: "t", inputSchema: BASE_SCHEMA });
+  const after = snapshotOf({
+    name: "t",
+    annotations: { readOnlyHint: true },
+    inputSchema: BASE_SCHEMA,
+  });
+  assert.deepEqual(diffSnapshots(before, after), [{ toolName: "t", kind: "changed" }]);
+});
+
+test("a tool declaring neither title nor annotations hashes as it always did", () => {
+  // Backward compatibility: an old baseline must not read as wholesale
+  // drift the first time a newer palar snapshots the same unchanged tools.
+  const snapshot = snapshotOf({ name: "t", description: "d", inputSchema: BASE_SCHEMA });
+  const entry = snapshot.tools["t"];
+  assert.equal(typeof entry, "object");
+  assert.ok(!("title" in (entry as object)), "title key should be absent");
+  assert.ok(!("annotations" in (entry as object)), "annotations key should be absent");
+  // Pinned rather than recomputed: the point is that the hashed material
+  // for a tool declaring neither field is byte-identical to what palar
+  // hashed before title and annotations joined it. Recomputing with the
+  // same code would agree with itself no matter what changed.
+  assert.equal(
+    (entry as { hash: string }).hash,
+    "254d0879da9ae9bd7c1291496f5df3b2163f6745e31109222bf0100e5aeb34f6"
+  );
+});
+
+test("a display title change is reported with both values and stays neutral", () => {
+  const before = snapshotOf({ name: "t", title: "Fetch URL", inputSchema: BASE_SCHEMA });
+  const after = snapshotOf({ name: "t", title: "Fetch anything", inputSchema: BASE_SCHEMA });
+
+  const [entry] = diffSnapshotsDetailed(before, after);
+  assert.equal(entry!.kind, "changed");
+  const change = entry!.changes.find((c) => c.description.includes("display title"))!;
+  assert.equal(change.classification, "neutral");
+  assert.match(change.description, /"Fetch anything"/);
+  assert.match(change.description, /"Fetch URL"/);
+});
+
+test("moving a title between its two spec positions is not a title change", () => {
+  const before = snapshotOf({
+    name: "t",
+    annotations: { title: "Fetch URL" },
+    inputSchema: BASE_SCHEMA,
+  });
+  const after = snapshotOf({ name: "t", title: "Fetch URL", inputSchema: BASE_SCHEMA });
+
+  const [entry] = diffSnapshotsDetailed(before, after);
+  // The raw bytes moved, so the hash moved and the tool reads "changed" —
+  // but the resolved title is identical, so nothing is described as having
+  // changed about it. Same shape as a same-length description reword.
+  assert.equal(entry!.kind, "changed");
+  assert.deepEqual(entry!.changes, []);
+});

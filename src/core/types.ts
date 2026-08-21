@@ -17,11 +17,62 @@ export interface JSONSchemaProperty {
   [key: string]: unknown;
 }
 
+/**
+ * The MCP `ToolAnnotations` object: a tool's own claims about what calling
+ * it does.
+ *
+ * Every field is a HINT, and the spec says so in as many words — a client
+ * is told not to trust these from an untrusted server. palar therefore
+ * treats them as text the target wrote about itself, never as a property
+ * palar established. That distinction is load-bearing in two places: the
+ * drift axis (see snapshot.ts's `claim-relaxed`) and the contradiction
+ * class (see live/annotation-contradiction.ts), both of which exist
+ * precisely because a claim and a constraint are different kinds of fact.
+ *
+ * The spec's defaults are the dangerous side of each hint —
+ * `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false`,
+ * `openWorldHint: true` — so an ABSENT hint is not a neutral state, and
+ * palar must not silently substitute the default for a declaration that
+ * was never made. See core/annotations.ts's describeHint().
+ */
+export interface MCPToolAnnotations {
+  /** Display name for the tool, the `annotations.title` position. See resolveToolTitle(). */
+  title?: string;
+  /** Claims the tool does not modify its environment. Spec default: false. */
+  readOnlyHint?: boolean;
+  /** Claims the tool may perform destructive updates. Spec default: true. */
+  destructiveHint?: boolean;
+  /** Claims repeated calls with the same arguments have no additional effect. Spec default: false. */
+  idempotentHint?: boolean;
+  /** Claims the tool may interact with an open world of external entities. Spec default: true. */
+  openWorldHint?: boolean;
+  [key: string]: unknown;
+}
+
 /** An MCP tool definition as declared in a local JSON file. */
 export interface MCPToolDefinition {
   name: string;
+  /**
+   * The top-level `title` position, added in the 2025-06-18 spec revision.
+   * A tool may carry a title HERE or under `annotations.title` — both are
+   * live in the wild, and palar reads both. Never read this field
+   * directly; go through resolveToolTitle(), which knows the precedence.
+   */
+  title?: string;
   description?: string;
+  annotations?: MCPToolAnnotations;
   inputSchema?: {
+    type?: string;
+    properties?: Record<string, JSONSchemaProperty>;
+    required?: string[];
+    [key: string]: unknown;
+  };
+  /**
+   * Declared shape of the tool's RESULT. Carried through so it is not
+   * silently dropped between the live and static paths; no rule reads it
+   * yet, and one that does must say what it establishes.
+   */
+  outputSchema?: {
     type?: string;
     properties?: Record<string, JSONSchemaProperty>;
     required?: string[];
@@ -143,6 +194,30 @@ export interface ToolSnapshotEntry {
   hash: string;
   /** Length of the description (0 when absent); text is not stored. */
   descriptionLength: number;
+  /**
+   * The tool's resolved display title, absent when it declared none.
+   *
+   * Stored as TEXT, unlike the description, because a title is a short
+   * label rather than a body of prose — there is nothing to bound here,
+   * and a diff that can say what the label changed FROM and TO is worth
+   * far more on a display surface than a character count would be.
+   *
+   * Resolved across both spec positions (see core/annotations.ts), so a
+   * server migrating a title from `annotations.title` to the top-level
+   * field does not read as a title change. It is not the same string as
+   * the tool's `name` when no title was declared: absent means absent.
+   */
+  title?: string;
+  /**
+   * The boolean annotation hints the tool DECLARED, keyed by hint name.
+   *
+   * An absent key means the server did not declare that hint — it is
+   * never filled in with the spec's default, because the default and the
+   * declaration are different facts and the drift comparison needs to
+   * tell them apart. Moving from "not declared" to a safety claim is
+   * itself the interesting transition (see snapshot.ts's SAFER_CLAIM).
+   */
+  annotations?: Record<string, boolean>;
   /** Flattened property path ("config.command", "args[]") → summary. */
   properties: Record<string, PropertySummary>;
 }

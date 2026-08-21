@@ -290,22 +290,60 @@ function deriveMountDir(programPath: string): string {
   return own;
 }
 
-/** Normalizes the SDK's tool list into the same shape the static rules already consume. */
-function toToolDefinitions(listed: unknown[]): MCPToolDefinition[] {
+/**
+ * Normalizes the SDK's tool list into the same shape the static rules
+ * already consume.
+ *
+ * "Normalizes" means renaming nothing and reshaping nothing — every field
+ * below is copied across verbatim when it is present and omitted when it
+ * is not. That is the whole contract, and the reason it is worth stating
+ * is that this function used to keep three fields and silently drop the
+ * rest. `title`, `annotations` and `outputSchema` all reach a client
+ * over the wire and all three vanished here, so a rule reading them saw
+ * them on a `scan` of the JSON file and never on a `scan --from-url` of
+ * the very same server. A field that exists in one path and not the other
+ * is worse than a field neither path has: it makes the two commands
+ * disagree about one server and gives a reader no way to tell which is
+ * wrong.
+ *
+ * Both title positions survive because both are read downstream — see
+ * core/annotations.ts's resolveToolTitle() for why there are two.
+ * Anything the SDK sends that palar has no type for is dropped, which is
+ * the one exception and an intentional one: an unknown field is not
+ * something a rule can judge.
+ */
+export function toToolDefinitions(listed: unknown[]): MCPToolDefinition[] {
   const definitions: MCPToolDefinition[] = [];
   for (const entry of listed) {
     if (typeof entry !== "object" || entry === null) continue;
-    const tool = entry as { name?: unknown; description?: unknown; inputSchema?: unknown };
+    const tool = entry as {
+      name?: unknown;
+      title?: unknown;
+      description?: unknown;
+      annotations?: unknown;
+      inputSchema?: unknown;
+      outputSchema?: unknown;
+    };
     if (typeof tool.name !== "string") continue;
     definitions.push({
       name: tool.name,
+      ...(typeof tool.title === "string" ? { title: tool.title } : {}),
       ...(typeof tool.description === "string" ? { description: tool.description } : {}),
+      // Kept as the server sent it, including any hint palar does not
+      // model. A hint is the server's own claim about itself; editing it
+      // on the way in would mean palar reporting on its own paraphrase.
+      ...(typeof tool.annotations === "object" && tool.annotations !== null
+        ? { annotations: tool.annotations as MCPToolDefinition["annotations"] }
+        : {}),
       // Passed through as-is rather than reshaped. Whatever the server
       // actually serves is what the rules should judge; normalizing it
       // here would mean palar rates its own interpretation of the schema
       // instead of the schema.
       ...(typeof tool.inputSchema === "object" && tool.inputSchema !== null
         ? { inputSchema: tool.inputSchema as MCPToolDefinition["inputSchema"] }
+        : {}),
+      ...(typeof tool.outputSchema === "object" && tool.outputSchema !== null
+        ? { outputSchema: tool.outputSchema as MCPToolDefinition["outputSchema"] }
         : {}),
     });
   }

@@ -6,6 +6,107 @@ This project is pre-1.0. Under `0.x`, minor releases may change behaviour;
 the "Behaviour changes" section of each entry is the part to read before
 upgrading a CI gate.
 
+## Unreleased
+
+### Behaviour changes
+
+- **Scores can move on a server that declares annotations or a title, with
+  no flag changing.** Two new finding sources exist: `TA-101` (live only,
+  `high` · `CONFIRMED`) and the `TS-*` rules now scanning `title`. Because
+  `TA-101` is `confirmed`, a run containing one grades `F` — the existing
+  `confirmedForcesF()` rule, which `compliance.ts` already documented as
+  applying to a confirmed finding that is not `critical`. Note this can only
+  arise alongside an `IV-101`, which already forced `F` on its own.
+
+- **A `.palar-snapshot.json` taken before this release compares cleanly, but
+  a tool that declares a title or annotations now hashes differently.**
+  Those fields joined the hashed material so an annotation-only flip is
+  detectable at all. Both are folded in only when present, so a tool
+  declaring neither hashes exactly as it did before and an old baseline does
+  not read as wholesale drift.
+
+### Added
+
+- **`TA-101`: annotations contradicted by a probe.** MCP tool annotations
+  are the tool's claims about what calling it does, and clients read them to
+  decide whether to ask you first. Nothing enforces them. When a probe's
+  out-of-band callback arrives, palar holds both halves of a contradiction —
+  the claim, read from the server's own `listTools()`, and a demonstration
+  of the opposite — and reports it as its own finding rather than as more of
+  the injection. A confirmed command injection refutes `readOnlyHint: true`,
+  `destructiveHint: false`, and `openWorldHint: false`; a confirmed SSRF
+  refutes `openWorldHint: false` and nothing else, because a server-side GET
+  may leave the server's own environment untouched. **A hint the server
+  never declared is never contradicted** — the spec's defaults are not
+  substituted for a declaration that was never made.
+
+  `high` rather than `critical`: the exploitable primitive already carries
+  `critical` under `IV-101` from the same callback, and stacking a second
+  would weigh one piece of evidence twice. This is the separate defect of
+  the declaration that removes the approval prompt.
+
+- **`fixtures/contradiction-server`.** A second live fixture, whose tools
+  declare `readOnlyHint: true` while reaching a shell and
+  `openWorldHint: false` while fetching an attacker-supplied URL. Three of
+  its declarations are deliberate controls that must NOT fire, including a
+  genuinely exploitable tool that declares nothing at all.
+  `fixtures/vuln-server` is untouched — the demo transcript on the site is
+  generated from a real run of it.
+
+- **`title` scanned as a third display surface.** The `TS-*` code-point
+  rules now read `title` alongside `name` and `description`, in both spec
+  positions (top-level `title` and `annotations.title` — two of the six
+  sample targets use one, three use the other). Title is what a client's UI
+  renders to the person doing the approving, and the spec warns it may not
+  faithfully describe the tool. This widens where the existing checks look;
+  it is not a new check, and on a benign server it produces no additional
+  findings.
+
+- **Annotation drift, on its own axis.** `ChangeClassification` gains a
+  fourth value, `claim-relaxed`, for a tool that starts declaring itself
+  safer than it did — `readOnlyHint` arriving at `true`, `destructiveHint`
+  at `false`, `openWorldHint` at `false`, including from having declared
+  nothing, since the spec's defaults are the dangerous side. It marks the
+  tool `regressed` like a schema loosening does, but keeps its own name:
+  a dropped `required` flag is a verified change to what the schema
+  permits, while an annotation flip is a change to what the server says
+  about itself with nothing verified. Its `reason` entries are phrased as
+  claims — "the server now claims ..." — so the two stay distinguishable in
+  a line that has lost the classification field. The reverse direction
+  (a tool newly declaring itself destructive) stays `neutral`: it makes a
+  client gate harder and has no rug-pull shape.
+
+### Fixed
+
+- **`scan --from-url` and `--from-command` no longer strip `title`,
+  `annotations`, and `outputSchema`.** The live enumeration path kept three
+  fields and silently dropped the rest, so a rule reading any of them saw
+  them on a `scan` of the JSON file and never on a live scan of the very
+  same server. A field present in one path and absent in the other is worse
+  than one neither path has: it makes the two commands disagree about a
+  single server with no way to tell which is right.
+
+### Known gaps
+
+- **`TS-006` does not scan `title`.** Title joined the code-point rules
+  (`TS-001`…`TS-005`) as a third display surface, but the confusables rule
+  — mixed Latin/Cyrillic or Latin/Greek inside one word, and NFKC
+  compatibility forms — still reads `name` only. This is a real gap, not an
+  oversight: a title written as `Rеad file` with a Cyrillic `е` spoofs the
+  label a client's UI renders, and palar does not currently catch it.
+
+  It was left out because `TS-006`'s detection is identifier-shaped, and a
+  title is prose. It splits on non-alphanumerics and requires a Latin letter
+  in the same word, which is a good fit for a tool name and a looser one for
+  a human-readable label that may legitimately carry a compatibility form
+  (`№`, a fullwidth character in a CJK title). Extending it means deciding
+  what a false positive on a display string costs, which is a judgement
+  worth making deliberately rather than inheriting from the name rule.
+
+  Recorded here so the decision is a decision. If it is revisited, the test
+  to beat is a title that mixes scripts inside one word without firing on a
+  title that is merely multilingual.
+
 ## 0.3.0
 
 ### Behaviour changes
