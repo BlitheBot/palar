@@ -1,17 +1,18 @@
 /**
  * Unit tests for probe status resolution.
  *
- * The ordering rule (confirmed > not-tested > rejected > unconfirmed) is
+ * The ordering rule (confirmed > not-tested > inconclusive > rejected >
+ * unconfirmed) is
  * the whole reason this module exists, so it is tested exhaustively over
  * the callback x isError matrix rather than only on the paths that happen
  * to occur against today's fixtures.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveProbeStatus } from "./status.js";
+import { resolveProbeStatus, wouldBeRejected } from "./status.js";
 import type { CallbackEvent } from "./oracle.js";
 import type { ProbeArgumentIssue } from "./probes.js";
-import type { ToolCallCapture } from "./types.js";
+import type { ControlCall, ToolCallCapture } from "./types.js";
 
 const CALLBACK: CallbackEvent = {
   nonce: "abc123",
@@ -161,4 +162,97 @@ test("no argument issues => the previous three-way resolution is unchanged", () 
   assert.equal(resolveProbeStatus(null, { error: "boom" }, []), "unconfirmed");
   assert.equal(resolveProbeStatus(null, ok, []), "unconfirmed");
   assert.equal(resolveProbeStatus(CALLBACK, errored, []), "confirmed");
+});
+
+// ---------------------------------------------------------------------------
+// The control call and `inconclusive`.
+//
+// The point of these is the ORDERING. `inconclusive` has to sit above
+// `rejected` (never flatter the target) and below `not-tested` (prefer the
+// exact pre-flight explanation to the inferred after-the-fact one), and it
+// must never touch a probe whose status was already settled by evidence.
+// ---------------------------------------------------------------------------
+
+const controlErrored: ControlCall = {
+  attempted: true,
+  outcome: "errored",
+  args: { path: "palar-live-probe" },
+  toolCall: { isError: true, textPreview: "Executable doesn't exist at /ms-playwright/chromium" },
+  durationMs: 12,
+};
+
+const controlClean: ControlCall = {
+  attempted: true,
+  outcome: "succeeded",
+  args: { path: "palar-live-probe" },
+  toolCall: { isError: false, textPreview: "ok" },
+  durationMs: 8,
+};
+
+const controlWithheld: ControlCall = {
+  attempted: false,
+  reason: "the tool name contains \"delete\"",
+};
+
+test("errored probe + errored control => inconclusive", () => {
+  // The motivating case: playwright's probes, with Chromium absent. The
+  // tool never ran, so the error is not a refusal of the payload.
+  assert.equal(resolveProbeStatus(null, errored, [], controlErrored), "inconclusive");
+});
+
+test("errored probe + clean control => rejected, and the rejection is earned", () => {
+  assert.equal(resolveProbeStatus(null, errored, [], controlClean), "rejected");
+});
+
+test("errored probe + withheld control => rejected, exactly as before controls existed", () => {
+  assert.equal(resolveProbeStatus(null, errored, [], controlWithheld), "rejected");
+});
+
+test("a callback outranks an errored control", () => {
+  // Positive physical evidence beats every inference. A confirmed
+  // injection whose tool is ALSO broken in some other way is still
+  // confirmed — downgrading it to inconclusive would be the same class of
+  // false negative that the callback-first rule exists to prevent.
+  assert.equal(resolveProbeStatus(CALLBACK, errored, [], controlErrored), "confirmed");
+});
+
+test("not-tested outranks inconclusive", () => {
+  // Both explanations apply. The schema-derived one is exact and known
+  // before the call was sent; the control's is inferred afterwards from a
+  // target that has already received a payload. Exact wins.
+  const issues: ProbeArgumentIssue[] = [
+    { fieldPath: "origin", isTarget: false, detail: 'declares enum ["ui","llm"]' },
+  ];
+  assert.equal(resolveProbeStatus(null, errored, issues, controlErrored), "not-tested");
+});
+
+test("a control never turns a clean call into a failure", () => {
+  // An errored control on a probe that did NOT error says nothing: the
+  // probe's own call came back fine, so there is no failure to explain.
+  assert.equal(resolveProbeStatus(null, ok, [], controlErrored), "unconfirmed");
+  assert.equal(resolveProbeStatus(null, unset, [], controlErrored), "unconfirmed");
+});
+
+test("a transport failure with an errored control stays unconfirmed", () => {
+  // A transport failure was never a rejection, so it is not a candidate
+  // for inconclusive either — the call never completed and we do not know
+  // whether the handler ran.
+  assert.equal(
+    resolveProbeStatus(null, { error: "socket hang up" }, [], controlErrored),
+    "unconfirmed"
+  );
+});
+
+test("wouldBeRejected only fires where a control could change the answer", () => {
+  // This predicate decides whether a control call is spent at all, so a
+  // drift between it and resolveProbeStatus would mean either wasted calls
+  // or probes that silently never get controlled.
+  assert.equal(wouldBeRejected(null, errored), true);
+  assert.equal(wouldBeRejected(CALLBACK, errored), false);
+  assert.equal(wouldBeRejected(null, ok), false);
+  assert.equal(wouldBeRejected(null, { error: "socket hang up" }), false);
+  assert.equal(
+    wouldBeRejected(null, errored, [{ fieldPath: "x", isTarget: false, detail: "d" }]),
+    false
+  );
 });

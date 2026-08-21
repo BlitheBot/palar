@@ -163,6 +163,11 @@ So the two tiers say different things, and palar keeps them apart:
   The call failed while palar's own arguments already violated the schema
   the target published, so the field was never exercised. It is reported as
   missing coverage, not as a result.
+- **An `inconclusive` probe changes nothing, and is the third way of
+  learning nothing.** The probe errored, and so did a benign, payload-free
+  *control call* to the same tool — so the tool could not run in that
+  environment at all and the payload was never the thing being answered.
+  Also reported as missing coverage.
 
 **The tradeoff this makes, stated plainly:** a genuinely injectable field
 now reads `medium` until something proves otherwise. `start_process.command`
@@ -349,8 +354,43 @@ ATTEMPTED — REJECTED: the failure is explained by palar's own input, so
 nothing was learned about the probed field, and its static finding stays
 listed under STATIC-ONLY. That check is exact for constraints the target
 declared and blind to ones it only *enforces*; a probe bounced by an
-undeclared rule still reads REJECTED, because telling those apart would
-mean guessing from free-form error text.
+undeclared rule reads REJECTED or INCONCLUSIVE, because telling those apart
+from the error text alone would mean guessing.
+
+#### The control call: separating "it refused us" from "it never ran"
+
+`rejected` used to absorb a second, very different situation — the tool
+could not run *at all*, so no request was attempted and the payload was
+never the thing being answered. playwright-mcp's two probes read
+`rejected` when Chromium was simply absent from the container, which is
+reassurance about something that was never tested.
+
+palar now separates those without reading any error text. When a probe
+errors, it sends the same tool a **control call**: schema-valid benign
+arguments, no payload. If the control comes back clean, the tool
+demonstrably runs and the rejection is earned. If the control errors too,
+the probe is **INCONCLUSIVE**. It compares outcomes, never strings.
+
+The control is sent *after* the payload (so a benign call cannot
+contaminate the probe), only for probes that would otherwise read
+`rejected`, and at most once per tool — so the added cost is roughly one
+extra round trip per errored tool, measured at 5–7ms against a local stdio
+target and bounded by `--control-timeout-ms`.
+
+**A benign call is still a real call**, so it is gated. An SSE target never
+gets one (no sandbox exists to bound it). A tool declaring
+`destructiveHint: true` never gets one. Neither does a tool whose *name*
+matches palar's own destructive-verb list. Crucially, a *safety* claim
+(`readOnlyHint: true`, `destructiveHint: false`) grants nothing — a hint
+can only ever subtract permission, because a safety claim is exactly what a
+hostile server would write. A tool that is gated off stays `rejected` and
+is labelled **(NOT CONTROLLED)**, so it is never mistaken for one that
+passed a control.
+
+**What `inconclusive` does not tell you:** only that the payload was not
+the cause. The leading suspect is usually *palar's own sandbox* — no
+egress, read-only mount, dropped capabilities, no DNS — rather than
+anything about the target, and the report says so on every entry.
 
 ```sh
 palar live fixtures/vuln-server --execute
@@ -420,7 +460,7 @@ one.
 | Outcome | Exit |
 | --- | --- |
 | Something was CONFIRMED by an oracle callback | `1` |
-| palar examined nothing — no target reached, every target reached had zero tools, or every probe was NOT TESTED | `2` |
+| palar examined nothing — no target reached, every target reached had zero tools, or no probe exercised its field (every one NOT TESTED or INCONCLUSIVE) | `2` |
 | At least one target was reached and probing happened (including partial coverage) | `0` |
 
 `2` is the same code, for the same reason, that `scan` uses for a target it
@@ -745,9 +785,12 @@ src/
               classification and construction, reusing
               rules/input-validation.ts's keyword matching), liveScan
               (orchestrator), status (probe status resolution), report
-              (CONFIRMED / NOT-TESTED / ATTEMPTED-REJECTED /
-              ATTEMPTED-UNCONFIRMED / STATIC-ONLY rendering), escalate
-              (a confirmed callback rewriting the static finding). Used by
+              (CONFIRMED / NOT-TESTED / INCONCLUSIVE /
+              ATTEMPTED-REJECTED / ATTEMPTED-UNCONFIRMED / STATIC-ONLY
+              rendering), control (the benign control call and its
+              side-effect gate), coverage (how much was actually exercised,
+              and the exit code that follows), escalate (a confirmed
+              callback rewriting the static finding). Used by
               `scan --from-*` alone:
               enumerate (container command planning, listTools(), and the
               enumerated / no-tools / never-reached result union)

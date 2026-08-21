@@ -50,9 +50,25 @@ function formatCodePoint(cp: number): string {
 const PROBE_LABELS: Record<LiveProbeResult["status"], string> = {
   confirmed: "CONFIRMED",
   "not-tested": "NOT TESTED — PALAR'S OWN ARGUMENTS WERE INVALID",
+  inconclusive: "INCONCLUSIVE — THE TOOL COULD NOT RUN HERE AT ALL",
   rejected: "ATTEMPTED — REJECTED BY TARGET",
   unconfirmed: "ATTEMPTED — UNCONFIRMED",
 };
+
+/**
+ * The two tiers of `rejected`, rendered into the heading itself.
+ *
+ * A reader who knows palar runs control calls must not read every
+ * REJECTED as controlled. A rejection backed by a clean control is a
+ * materially stronger observation than one where the control was withheld
+ * — the first knows the tool runs, the second is exactly where the report
+ * was before control calls existed. Collapsing them would launder the
+ * weaker into the stronger.
+ */
+function rejectedTier(p: LiveProbeResult): string {
+  if (p.status !== "rejected") return "";
+  return p.control?.attempted === true ? " (control call ran clean)" : " (NOT CONTROLLED)";
+}
 
 function renderArgumentIssues(p: LiveProbeResult): string[] {
   if (p.argumentIssues.length === 0) return [];
@@ -66,10 +82,75 @@ function renderArgumentIssues(p: LiveProbeResult): string[] {
   return lines;
 }
 
+/**
+ * The control call's own line, plus — for an inconclusive probe — the
+ * caveat that palar's own sandbox is the leading suspect.
+ *
+ * That last part is not optional and not a source comment. status.ts's
+ * honest-limit list records six causes that `inconclusive` cannot tell
+ * apart, and cause (2) is that palar's OWN isolation (no egress, read-only
+ * mount, dropped capabilities, no DNS) broke the tool. On the evidence so
+ * far that is the likeliest one. A reader who sees "the tool could not run
+ * here" and concludes something about the target — rather than about the
+ * container palar put it in — has been misled by a status that exists to
+ * stop exactly that kind of misreading.
+ */
+function renderControl(p: LiveProbeResult): string[] {
+  const control = p.control;
+  if (!control) return [];
+  const lines: string[] = [];
+
+  if (!control.attempted) {
+    lines.push(
+      `- **Control call:** not sent — ${control.reason}.`
+    );
+  } else {
+    const outcome =
+      control.outcome === "succeeded"
+        ? "came back CLEAN"
+        : "ERRORED too";
+    const body =
+      "error" in control.toolCall
+        ? `failed — ${control.toolCall.error}`
+        : control.toolCall.textPreview || "(empty)";
+    lines.push(
+      `- **Control call:** benign, payload-free call to the same tool ${outcome} ` +
+        `(${control.durationMs}ms) with \`${JSON.stringify(control.args)}\` — ${body}`
+    );
+  }
+
+  if (p.status === "inconclusive") {
+    lines.push("");
+    lines.push(
+      "  palar sent this tool a second call with schema-valid benign arguments and NO payload, " +
+        "and that errored too. So the tool did not run here at all, and the error above is not " +
+        "the target refusing the payload — it is not evidence about the payload either way. " +
+        "This is compared as an outcome, not matched against the error text."
+    );
+    lines.push("");
+    lines.push(
+      "  **The leading suspect is palar's own sandbox, not the target.** The container denies " +
+        "the target all network egress, mounts its directory read-only, drops capabilities and " +
+        "gives it no DNS resolver — any tool needing one of those fails here and would work " +
+        "fine outside. Other causes this cannot distinguish: a dependency missing from the " +
+        "container (a browser that was never installed), a tool that is simply broken, one that " +
+        "refuses every unrecognized caller, a rule the schema never declared that the benign " +
+        "filler also trips, or palar's own earlier payload having wedged the handler. What it " +
+        "rules out is only this: the payload is not the explanation."
+    );
+    lines.push("");
+    lines.push(
+      "  The static finding for this field stands exactly as the static pass wrote it. Nothing " +
+        "here raises or lowers it, and this probe is NOT counted as coverage."
+    );
+  }
+  return lines;
+}
+
 function renderProbe(p: LiveProbeResult): string {
   const lines: string[] = [];
   const label = PROBE_LABELS[p.status];
-  lines.push(`#### [${label}] ${p.toolName}.${p.fieldPath} (${p.kind})`);
+  lines.push(`#### [${label}${rejectedTier(p)}] ${p.toolName}.${p.fieldPath} (${p.kind})`);
   lines.push("");
   lines.push(`- **Why probed:** ${p.reason}`);
   lines.push(`- **Payload sent:** \`${p.payload}\``);
@@ -90,6 +171,7 @@ function renderProbe(p: LiveProbeResult): string {
         : `Tool call response${call.isError ? " (isError=true)" : ""}`;
     lines.push(`- **${heading}:** ${call.textPreview || "(empty)"}`);
   }
+  lines.push(...renderControl(p));
   // Listed for every status, not only not-tested: on a probe that
   // succeeded anyway it is the observation that the target does not
   // enforce a constraint it advertises, which is worth seeing.
@@ -118,6 +200,19 @@ function renderProbe(p: LiveProbeResult): string {
         "is NOT proof the tool is safe: it rejected THIS ONE input, which says nothing about " +
         "any other input. The severity of the corresponding static finding is deliberately " +
         "left unchanged."
+    );
+    lines.push("");
+    lines.push(
+      p.control?.attempted === true
+        ? "  A benign, payload-free control call to this same tool came back clean, so the " +
+            "tool does run in this environment and the error above is the target answering " +
+            "THIS payload rather than failing to start. That is what distinguishes this entry " +
+            "from an INCONCLUSIVE one."
+        : "  **No control call was sent for this tool**, so palar has not established that the " +
+            "tool can run here at all. If it cannot — a missing dependency, palar's own " +
+            "sandbox restrictions — then the error above is not a refusal of the payload and " +
+            "this entry should be read as INCONCLUSIVE rather than as the target pushing " +
+            "back. See the control-call line above for why it was withheld."
     );
     lines.push("");
     lines.push(
@@ -170,7 +265,16 @@ function renderPoisoning(check: PoisoningLiveCheck): string {
       "directly only exercises the tool's own (non-agentic) code path, captured below."
   );
   const call = check.toolCall;
-  if (call && "error" in call) {
+  if (check.withheldReason) {
+    // The finding itself is unaffected: it rests on the description bytes,
+    // which are already in hand. Only the behavioural sample is missing,
+    // and an unexplained absence is worse than a stated one.
+    lines.push(
+      `- **Direct tool call:** NOT MADE — ${check.withheldReason}. The poisoning finding above ` +
+        `stands regardless: it rests on the description this server served, not on calling ` +
+        `the tool. What is missing is only a sample of the tool's own code path.`
+    );
+  } else if (call && "error" in call) {
     lines.push(`- **Direct tool call:** failed — ${call.error}`);
   } else if (call) {
     lines.push(`- **Direct tool call response:** ${call.textPreview || "(empty)"}`);
@@ -303,8 +407,40 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
 
   const confirmed = live.probes.filter((p) => p.status === "confirmed");
   const notTested = live.probes.filter((p) => p.status === "not-tested");
+  const inconclusive = live.probes.filter((p) => p.status === "inconclusive");
   const rejected = live.probes.filter((p) => p.status === "rejected");
   const unconfirmed = live.probes.filter((p) => p.status === "unconfirmed");
+
+  // The coverage headline, stated before any bucket. "N of M probes
+  // actually exercised the field" is the one number that separates a scan
+  // that looked from a scan that only ran, and burying it under the
+  // per-status sections is how a run where almost nothing was exercised
+  // reads as a clean run. Deliberately NOT a pass/fail threshold: a
+  // majority cliff would be a magic number, so the count is reported and
+  // the reader draws the line.
+  const exercised = live.probes.filter(
+    (p) => p.status !== "not-tested" && p.status !== "inconclusive"
+  );
+  if (live.probes.length > 0) {
+    lines.push("## COVERAGE");
+    lines.push("");
+    const unexamined = live.probes.length - exercised.length;
+    lines.push(
+      `**${exercised.length} of ${live.probes.length} probe(s) actually exercised the field.** ` +
+        `${notTested.length} NOT TESTED (palar's own arguments violated the target's declared ` +
+        `schema); ${inconclusive.length} INCONCLUSIVE (the tool could not run here at all). ` +
+        `Those ${unexamined} probe(s) learned nothing about the target in either direction, ` +
+        `and their static findings remain exactly as the static pass wrote them.`
+    );
+    lines.push("");
+    if (exercised.length === 0) {
+      lines.push(
+        "Every probe in this scan fell into one of those two buckets. That is not a clean " +
+          "result; it is no result."
+      );
+      lines.push("");
+    }
+  }
 
   lines.push("## CONFIRMED — oracle callback received");
   lines.push("");
@@ -439,14 +575,35 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
     }
   }
 
-  // A not-tested probe is deliberately NOT counted as coverage here: its
-  // call never reached the field, so the static finding on that field is
-  // still unsettled and belongs in the unexamined bucket. It appears in
-  // both sections — once with the evidence of what went wrong, once in the
-  // list of what remains unverified — which is the honest pair.
+  lines.push("## INCONCLUSIVE — the tool could not run here at all");
+  lines.push("");
+  lines.push(
+    `${inconclusive.length} probe(s) whose error is not attributable to the payload: a second, ` +
+      `benign, payload-free call to the same tool errored too. Nothing about the target's ` +
+      `handling of the payload was learned, in either direction — and the leading suspect is ` +
+      `palar's own sandbox (no egress, read-only mount, dropped capabilities, no DNS), not the ` +
+      `target. These are NOT counted as coverage and move no severity.`
+  );
+  lines.push("");
+  if (inconclusive.length === 0) {
+    lines.push("None.");
+    lines.push("");
+  } else {
+    for (const p of inconclusive) {
+      lines.push(renderProbe(p));
+      lines.push("");
+    }
+  }
+
+  // Neither a not-tested nor an inconclusive probe is counted as coverage
+  // here, for the same reason: the field was never exercised, so the static
+  // finding on it is still unsettled and belongs in the unexamined bucket.
+  // They appear in both sections — once with the evidence of what went
+  // wrong, once in the list of what remains unverified — which is the
+  // honest pair.
   const probedPairs = new Set(
     live.probes
-      .filter((p) => p.status !== "not-tested")
+      .filter((p) => p.status !== "not-tested" && p.status !== "inconclusive")
       .map((p) => `${p.toolName}::${p.fieldPath}`)
   );
   const poisonedTools = new Set(live.poisoningChecks.map((c) => c.toolName));
@@ -468,8 +625,8 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
     `${staticOnly.length} finding(s) from the static analyzer with no dynamic confirmation ` +
       `attempted in this pass (credential scanning, network-posture config, schema meta-` +
       `validation, description hygiene, and non-top-level or non-string-keyword fields) — ` +
-      `plus any field whose probe is listed under NOT TESTED above, since that probe never ` +
-      `reached it.`
+      `plus any field whose probe is listed under NOT TESTED or INCONCLUSIVE above, since ` +
+      `neither of those probes exercised the field it was aimed at.`
   );
   lines.push("");
   for (const f of staticOnly) {

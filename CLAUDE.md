@@ -58,36 +58,51 @@ main at `version = "0.6.0"`; PyPI latest `0.5.17`), not blog posts or summaries:
 Re-verify before reusing these in anything outward-facing; v0.6 was unpublished
 on PyPI as of the date above, so `@latest` still resolved to the 0.5.x line.
 
-## Deferred: distinguishing an environmental failure from a target refusal
+## Shipped: distinguishing an environmental failure from a target refusal
 
-`rejected` currently spans two things a reader hears differently: the handler
-ran and refused the payload, and the handler could not run at all. Playwright's
-two probes were counted `rejected` when Chromium was simply absent from the
-container — the tool never ran, no request was attempted, and `rejected` reads
-as reassurance.
+`rejected` used to span two things a reader hears differently: the handler
+ran and refused the payload, and the handler could not run at all.
+Playwright's two probes were counted `rejected` when Chromium was simply
+absent from the container.
 
-From the tool result alone this is not separable. MCP gives one `isError`
-boolean and a free-form text body; there is no structured error class, and
-`status.ts` argues at length against pattern-matching the text.
+This is now separated by a **benign control call** (`live/control.ts`):
+same tool, schema-valid benign arguments, no payload, sent only when a
+probe would otherwise read `rejected`, memoized per tool, seeded from the
+poisoning check when that already made the identical call. If the control
+errors too, the probe reads `inconclusive` (`live/status.ts`), which is
+excluded from coverage (`live/coverage.ts`) and escalates nothing.
 
-The instrument that DOES separate them without reading error strings is a
-**benign control call**: the same tool, schema-valid benign arguments, no
-payload — machinery that already exists in `benignValueFor()` and
-`runPoisoningCheck()`. If the control errors too, the probe's error was not a
-refusal *of the payload*. Report that as a distinct status, `inconclusive`.
+The gate: an annotation may only ever SUBTRACT permission. `destructiveHint:
+true` vetoes; a *safety* claim grants nothing, because a safety claim is
+what a hostile server would write. Permission comes from the sandbox, so
+SSE targets are refused outright, as are tools whose names match palar's
+own destructive-verb list. `runPoisoningCheck` is gated by the same rule —
+it predates the gate and would otherwise have been a hole in it.
 
-Deliberately not implemented yet, and the reasons are the design work still
-owed rather than an objection:
+Measured cost: the control call skips the oracle wait entirely (the probe
+phase is ~99% callback timeout — 12 probes x 4s ~ the 48-49s measured
+phase), so its marginal cost is one bare round trip: median 6ms, max 70ms
+across 15 calls against `vuln-server` in the real sandbox; 5-7ms observed
+end-to-end. Bounded by `--control-timeout-ms` (defaults to
+`--callback-timeout-ms`) because the real risk is a tool that BLOCKS, not
+one that is slow.
 
-- It doubles tool calls against a live target.
-- A benign call to a destructive tool is still a real side effect. `delete_file`
-  with schema-valid filler is not a no-op, and the control must not be sent
-  blindly to every tool.
-- It establishes only that the payload was not the cause — not *why*. A missing
-  browser and a tool that refuses everything look identical, though arguably
-  both deserve the same non-reassuring status.
+### Open: SSE targets already receive payloads
 
-Do not ship this as a quick follow-on to the probe loop. Decide the
-side-effect gate first (which tools may receive a control call at all), then
-measure it against playwright, where the known-correct answer is that both
-probes should stop reading as refusals.
+Gating the benign control for SSE while the *payload* still goes out is not
+a defensible line, and it is recorded as a known incoherence in
+`live/control.ts` rather than papered over.
+
+`liveScan.ts`'s probe loop has **no transport branch**. `isStdio` is
+consulted in exactly four places — the definition, the result label, the
+stdio-only pre-flight, and sandbox creation — and none of them gate
+probing. So an SSE target receives the full injection payload set
+(`buildCommandInjectionPayload` / `buildSsrfPayload`) over the network,
+unsandboxed, to a remote server. `--execute`'s warning text does say SSE
+targets are "unaffected" by the sandboxing, which is true but reads as
+reassurance about isolation rather than as notice that payloads still go
+out.
+
+Deciding what probing an SSE target should do is a separate change with a
+separate blast radius, and it was deliberately not made alongside the
+control call.

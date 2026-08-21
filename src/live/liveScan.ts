@@ -32,7 +32,12 @@
  * (nothing is spawned) and only the overall timeout applies.
  */
 import { CallbackOracle } from "./oracle.js";
-import { resolveProbeStatus } from "./status.js";
+import { resolveProbeStatus, wouldBeRejected } from "./status.js";
+import {
+  buildBenignArguments,
+  controlGateDecision,
+  sendControlCall,
+} from "./control.js";
 import { connectLive, type LiveConnection } from "./connector.js";
 import { TargetSandbox } from "./sandbox.js";
 import {
@@ -49,6 +54,7 @@ import { findProgramToken } from "./enumerate.js";
 import { isConstrained } from "../rules/input-validation.js";
 import type { MCPServerConfig, MCPToolDefinition } from "../core/types.js";
 import type {
+  ControlCall,
   LiveAuditResult,
   LiveProbeResult,
   PoisoningLiveCheck,
@@ -74,6 +80,19 @@ export interface LiveScanOptions {
   onImageBuild?: (image: string) => void;
   /** How long to wait for an oracle callback after each probe call, default 4000ms. */
   callbackTimeoutMs?: number;
+  /**
+   * Ceiling for a single benign control call, default: whatever
+   * `callbackTimeoutMs` is.
+   *
+   * The cost of the control call is not latency — a benign call has no
+   * oracle wait, and measured against a local stdio target it is a
+   * single-digit-millisecond round trip. The cost is BLOCKING: a tool that
+   * launches a browser, or waits out its own long internal HTTP timeout,
+   * would otherwise add that whole wait to the scan. Bounding it at the
+   * callback timeout keeps a controlled probe costing about what one probe
+   * already costs.
+   */
+  controlTimeoutMs?: number;
   /**
    * Hard ceiling for the scan itself — connect, listTools, and every probe —
    * default 180000ms.
@@ -161,18 +180,130 @@ async function runOneProbe(
     payload,
     nonce,
     argumentIssues: issues,
-    status: resolveProbeStatus(callback, toolCall, issues),
+    // Provisional. A probe that would otherwise be `rejected` gets a
+    // benign control call afterwards, which can move it to
+    // `inconclusive` — see finalizeToolProbes() below. Every other status
+    // is already final here: a control call is never sent for one, and
+    // resolveProbeStatus() would ignore it if it were.
+    status: resolveProbeStatus(callback, toolCall, issues, null),
     callback,
     callbackTimeoutMs,
     toolCall,
+    control: null,
   };
 }
 
+/**
+ * The benign sentence used wherever a schema genuinely accepts free-form
+ * prose. Shared by the control call and the poisoning check so the two are
+ * literally the same call, which is what lets a poisoning check's result
+ * stand in as a control observation at zero extra cost.
+ */
+const BENIGN_SENTENCE =
+  "This is a benign sentence sent by a security scanner. It has two sentences.";
+
+/**
+ * Resolves the control call for one tool, at most once per scan, and
+ * applies it to that tool's probes.
+ *
+ * ## Why the control comes AFTER the payload
+ *
+ * Sending it first would mean mutating the target before the payload
+ * lands. A benign call that consumes a resource, trips a rate limiter, or
+ * advances a state machine changes what the payload then hits — and a
+ * probe corrupted that way can land in `unconfirmed`, which reads as "the
+ * target accepted the payload and said nothing". That is a false-clean,
+ * the one direction this pass refuses to fail in.
+ *
+ * Control-after has its own failure mode — a payload that wedged the
+ * handler makes the control error, and the probe reads `inconclusive` when
+ * the tool was working fine until palar broke it. That is the
+ * non-reassuring direction, so it is the better trade. It is recorded in
+ * status.ts's honest-limit list as cause (6) rather than hidden.
+ *
+ * ## Why it is conditional and memoized
+ *
+ * Only a probe that would otherwise resolve to `rejected` has an error a
+ * control could explain. A confirmed probe is settled by its callback, a
+ * not-tested one is already explained by palar's own arguments, and an
+ * unconfirmed one has no error at all. So the cost is not one call per
+ * probe: it is one call per TOOL that produced at least one errored probe.
+ * classifyExecutionAdjacentFields() can return several targets on the same
+ * tool, and one answer to "does this tool run here" serves all of them.
+ *
+ * `seed` lets a poisoning check that already made the identical benign
+ * call stand in, so those tools cost nothing at all.
+ */
+async function finalizeToolProbes(
+  connection: LiveConnection,
+  tool: LiveTool,
+  probes: LiveProbeResult[],
+  transportKind: "stdio" | "sse",
+  controlTimeoutMs: number,
+  seed: ControlCall | null
+): Promise<void> {
+  const needsControl = probes.filter((p) =>
+    wouldBeRejected(p.callback, p.toolCall, p.argumentIssues)
+  );
+  if (needsControl.length === 0) return;
+
+  let control = seed;
+  if (!control) {
+    const gate = controlGateDecision(tool, transportKind);
+    control = gate.allowed
+      ? await sendControlCall(
+          connection,
+          tool.name,
+          buildBenignArguments(tool, BENIGN_SENTENCE, benignValueFor),
+          controlTimeoutMs,
+          captureToolResult
+        )
+      : { attempted: false, reason: gate.reason };
+  }
+
+  for (const probe of needsControl) {
+    probe.control = control;
+    probe.status = resolveProbeStatus(
+      probe.callback,
+      probe.toolCall,
+      probe.argumentIssues,
+      control
+    );
+  }
+}
+
+/**
+ * The live description-poisoning check, and — when it makes its call — a
+ * free control observation for that tool.
+ *
+ * ## Why this path is gated now
+ *
+ * This check has always sent a benign, schema-valid, payload-free call to
+ * any tool carrying a zero-width code point in its description, and it did
+ * so with no side-effect gate of any kind. It predates the gate. A gate on
+ * the control call with this path left open would not be a gate, so the
+ * same rule applies here: see control.ts's controlGateDecision().
+ *
+ * The consequence is a real, accepted loss of coverage. A poisoned
+ * `delete_everything` no longer gets its behaviour sampled, and the check
+ * reports the poisoning plus the reason the call was withheld. That is the
+ * correct trade — the poisoning finding stands on the description alone,
+ * which is where the evidence for it was in the first place.
+ *
+ * ## Why its result doubles as a control
+ *
+ * The arguments it builds are now literally the same ones the control call
+ * builds (buildBenignArguments), so when this fires, the tool has already
+ * answered the exact question a control call asks. Returning it lets the
+ * probe loop skip a redundant call entirely.
+ */
 async function runPoisoningCheck(
   connection: LiveConnection,
   tool: LiveTool,
-  staticTools: Map<string, MCPToolDefinition>
-): Promise<PoisoningLiveCheck | null> {
+  staticTools: Map<string, MCPToolDefinition>,
+  transportKind: "stdio" | "sse",
+  controlTimeoutMs: number
+): Promise<{ check: PoisoningLiveCheck; control: ControlCall | null } | null> {
   const hit = detectPoisonedDescription(tool);
   if (!hit) return null;
 
@@ -182,36 +313,43 @@ async function runPoisoningCheck(
       ? staticDef.description === tool.description
       : null;
 
+  const gate = controlGateDecision(tool, transportKind);
+  if (!gate.allowed) {
+    return {
+      check: {
+        toolName: tool.name,
+        codePoints: hit.codePoints,
+        liveDescriptionMatchesStatic,
+        toolCall: null,
+        withheldReason: gate.reason,
+      },
+      control: { attempted: false, reason: gate.reason },
+    };
+  }
+
   // Required properties only, and a benign sentence only where the schema
   // actually accepts a free-form string — same reasoning as
   // buildProbeArguments. Blanket-filling every property with a sentence
   // bounced this call on any enum'd or non-string field, which made the
   // captured "direct tool call response" an argument-validation error
   // rather than the tool's own behavior.
-  const properties = tool.inputSchema.properties ?? {};
-  const required = new Set(
-    Array.isArray(tool.inputSchema.required)
-      ? tool.inputSchema.required.filter((n): n is string => typeof n === "string")
-      : []
+  const control = await sendControlCall(
+    connection,
+    tool.name,
+    buildBenignArguments(tool, BENIGN_SENTENCE, benignValueFor),
+    controlTimeoutMs,
+    captureToolResult
   );
-  const args: Record<string, unknown> = {};
-  for (const name of Object.keys(properties)) {
-    if (!required.has(name)) continue;
-    const prop = properties[name];
-    const freeFormString =
-      typeof prop === "object" && prop !== null && prop.type === "string" && !isConstrained(prop);
-    args[name] = freeFormString
-      ? "This is a benign sentence for a live poisoning check. It has two sentences."
-      : benignValueFor(prop);
-  }
-
-  const toolCall = await callToolSafely(connection, tool.name, args);
 
   return {
-    toolName: tool.name,
-    codePoints: hit.codePoints,
-    liveDescriptionMatchesStatic,
-    toolCall,
+    check: {
+      toolName: tool.name,
+      codePoints: hit.codePoints,
+      liveDescriptionMatchesStatic,
+      toolCall: control.attempted ? control.toolCall : null,
+      withheldReason: null,
+    },
+    control,
   };
 }
 
@@ -223,6 +361,11 @@ export async function runLiveScan(
   const start = Date.now();
   const overallTimeoutMs = opts.overallTimeoutMs ?? 180_000;
   const callbackTimeoutMs = opts.callbackTimeoutMs ?? 4_000;
+  // Defaults to the callback timeout rather than to a number of its own:
+  // the bound that matters is "a control must not cost more than a probe
+  // already does", and that is expressed by tracking the probe's own wait
+  // rather than by picking a second constant that could drift from it.
+  const controlTimeoutMs = opts.controlTimeoutMs ?? callbackTimeoutMs;
   const warnings: string[] = [];
   const errors: string[] = [];
 
@@ -431,13 +574,38 @@ export async function runLiveScan(
 
     for (const tool of liveTools) {
       const targets = classifyExecutionAdjacentFields(tool);
+      const toolProbes: LiveProbeResult[] = [];
       for (const target of targets) {
-        result.probes.push(
+        toolProbes.push(
           await runOneProbe(connection, startedOracle, tool, target, callbackTimeoutMs)
         );
       }
-      const poisoning = await runPoisoningCheck(connection, tool, staticByName);
-      if (poisoning) result.poisoningChecks.push(poisoning);
+      result.probes.push(...toolProbes);
+
+      // Ordered deliberately: probes, then the poisoning check, then the
+      // control. The poisoning check makes the identical benign call, so
+      // running it here — after the payloads, before the control — lets its
+      // result seed the control for free. Moving it ahead of the probes to
+      // "get the control early" would put a benign call in front of the
+      // payload, which is the contamination finalizeToolProbes() exists to
+      // avoid.
+      const poisoning = await runPoisoningCheck(
+        connection,
+        tool,
+        staticByName,
+        result.transportKind,
+        controlTimeoutMs
+      );
+      if (poisoning) result.poisoningChecks.push(poisoning.check);
+
+      await finalizeToolProbes(
+        connection,
+        tool,
+        toolProbes,
+        result.transportKind,
+        controlTimeoutMs,
+        poisoning?.control ?? null
+      );
     }
   })();
 

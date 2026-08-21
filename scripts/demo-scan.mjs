@@ -1,35 +1,26 @@
 // Demo runner for fixtures/vuln-server: starts the intentionally-vulnerable
 // server over stdio to prove it is real and running, then runs Palar's
-// static scan against its definition files. Combined output is written to
-// stdout and to demo/scan-output.log.
+// static scan against its definition files. Combined output goes to stdout;
+// redirect it if you want a file.
 //
 // Note: Palar is a read-only static analyzer — it audits local
 // mcp.tools.json / mcp.server.json files, it does not itself speak MCP to a
 // live server. The stdio smoke test and the static scan are therefore two
 // separate steps below, not one.
 import { spawn } from "node:child_process";
-import { mkdir, open } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const TSX_CLI = new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 const VULN_SERVER_ENTRY = "fixtures/vuln-server/src/index.ts";
 const FIXTURE_DIR = "fixtures/vuln-server";
-const LOG_PATH = "demo/scan-output.log";
 
-async function writeSection(logHandle, title) {
-  const banner = `\n=== ${title} ===\n`;
-  process.stdout.write(banner);
-  await logHandle.write(banner);
+function writeSection(title) {
+  process.stdout.write(`\n=== ${title} ===\n`);
 }
 
-async function tee(logHandle, text) {
-  process.stdout.write(text);
-  await logHandle.write(text);
-}
-
-async function smokeTestLiveServer(logHandle) {
-  await writeSection(logHandle, "1. Live stdio smoke test (fixtures/vuln-server)");
+async function smokeTestLiveServer() {
+  writeSection("1. Live stdio smoke test (fixtures/vuln-server)");
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [TSX_CLI, VULN_SERVER_ENTRY],
@@ -38,19 +29,16 @@ async function smokeTestLiveServer(logHandle) {
   try {
     await client.connect(transport);
     const { tools } = await client.listTools();
-    await tee(
-      logHandle,
-      `connected over stdio; server reports ${tools.length} tool(s):\n`
-    );
+    process.stdout.write(`connected over stdio; server reports ${tools.length} tool(s):\n`);
     for (const tool of tools) {
-      await tee(logHandle, `  - ${tool.name}\n`);
+      process.stdout.write(`  - ${tool.name}\n`);
     }
   } finally {
     await client.close();
   }
 }
 
-function runStaticScan(logHandle) {
+function runStaticScan() {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
@@ -60,11 +48,9 @@ function runStaticScan(logHandle) {
 
     child.stdout.on("data", (chunk) => {
       process.stdout.write(chunk);
-      logHandle.write(chunk);
     });
     child.stderr.on("data", (chunk) => {
       process.stderr.write(chunk);
-      logHandle.write(chunk);
     });
 
     child.on("error", reject);
@@ -73,17 +59,11 @@ function runStaticScan(logHandle) {
 }
 
 async function main() {
-  await mkdir("demo", { recursive: true });
-  const logHandle = await open(LOG_PATH, "w");
-  try {
-    await smokeTestLiveServer(logHandle);
-    await writeSection(logHandle, "2. Palar static scan (palar scan fixtures/vuln-server)");
-    const scanExitCode = await runStaticScan(logHandle);
-    await writeSection(logHandle, `done — log written to ${LOG_PATH}`);
-    process.exitCode = scanExitCode;
-  } finally {
-    await logHandle.close();
-  }
+  await smokeTestLiveServer();
+  writeSection("2. Palar static scan (palar scan fixtures/vuln-server)");
+  const scanExitCode = await runStaticScan();
+  writeSection("done");
+  process.exitCode = scanExitCode;
 }
 
 main().catch((err) => {

@@ -42,6 +42,7 @@ function probe(
         : null,
     callbackTimeoutMs: 4000,
     toolCall: { textPreview: "" },
+    control: null,
   } as LiveProbeResult;
 }
 

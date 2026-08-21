@@ -52,6 +52,7 @@ function probe(over: Partial<LiveProbeResult>): LiveProbeResult {
     callback: null,
     callbackTimeoutMs: 4000,
     toolCall: { isError: true, textPreview: "Parent directory does not exist: /tmp/127.0.0.1" },
+    control: null,
     ...over,
   };
 }
@@ -82,7 +83,9 @@ test("a rejected probe renders in its own section and keeps the static severity"
   const md = renderLiveMarkdownReport(staticResult([finding("read_file", "path")]), liveResult([probe({})]));
 
   assert.match(md, /## ATTEMPTED — REJECTED BY TARGET/);
-  assert.match(md, /\[ATTEMPTED — REJECTED BY TARGET\] read_file\.path/);
+  // The tier is part of the heading: this probe had no control call, so
+  // it must not read as one that passed a control.
+  assert.match(md, /\[ATTEMPTED — REJECTED BY TARGET \(NOT CONTROLLED\)\] read_file\.path/);
   // The finding is not suppressed, and its severity is untouched.
   assert.match(md, /1 probe\(s\) that the target ANSWERED WITH AN ERROR/);
   assert.doesNotMatch(md, /\bMEDIUM\b|\bLOW\b|downgrad/i);
@@ -153,7 +156,7 @@ test("rejected and unconfirmed are reported separately, not merged", () => {
   );
   assert.match(md, /## ATTEMPTED — REJECTED BY TARGET\n\n1 probe\(s\)/);
   assert.match(md, /## ATTEMPTED — UNCONFIRMED\n\n1 probe\(s\)/);
-  assert.match(md, /\[ATTEMPTED — REJECTED BY TARGET\] read_file\.path/);
+  assert.match(md, /\[ATTEMPTED — REJECTED BY TARGET \(NOT CONTROLLED\)\] read_file\.path/);
   assert.match(md, /\[ATTEMPTED — UNCONFIRMED\] search_nodes\.query/);
 });
 
@@ -235,4 +238,119 @@ test("the not-tested section states that the signal is pre-flight, not parsed fr
   const md = renderLiveMarkdownReport(staticResult([]), liveResult([notTestedProbe()]));
   assert.match(md, /before the call is sent/);
   assert.match(md, /blind to ones it only enforces/);
+});
+
+/**
+ * THE playwright CASE, at the reporting layer.
+ *
+ * Two probes were counted `rejected` when Chromium was simply absent from
+ * the container. The tool never ran and no request was attempted, so the
+ * report was reassuring about something that had not been tested. These
+ * tests pin the three things that must now be true of that output.
+ */
+function inconclusiveProbe(): LiveProbeResult {
+  return probe({
+    toolName: "browser_navigate",
+    fieldPath: "url",
+    kind: "ssrf",
+    status: "inconclusive",
+    toolCall: {
+      isError: true,
+      textPreview: "Executable doesn't exist at /ms-playwright/chromium-1234/chrome-linux/chrome",
+    },
+    control: {
+      attempted: true,
+      outcome: "errored",
+      args: { url: "palar-live-probe" },
+      toolCall: {
+        isError: true,
+        textPreview: "Executable doesn't exist at /ms-playwright/chromium-1234/chrome-linux/chrome",
+      },
+      durationMs: 14,
+    },
+  });
+}
+
+test("an inconclusive probe renders in its own section, never as a rejection", () => {
+  const md = renderLiveMarkdownReport(staticResult([]), liveResult([inconclusiveProbe()]));
+
+  assert.match(md, /## INCONCLUSIVE — the tool could not run here at all/);
+  assert.match(md, /\[INCONCLUSIVE — THE TOOL COULD NOT RUN HERE AT ALL\] browser_navigate\.url/);
+  // The whole point: it must not be counted among the rejections.
+  assert.match(md, /## ATTEMPTED — REJECTED BY TARGET\n\n0 probe\(s\)/);
+});
+
+test("an inconclusive probe names palar's own sandbox as the leading suspect", () => {
+  // Required by design, not incidental: a reader who sees "the tool could
+  // not run here" and concludes something about the TARGET has been misled
+  // by a status that exists to prevent exactly that misreading.
+  const md = renderLiveMarkdownReport(staticResult([]), liveResult([inconclusiveProbe()]));
+
+  assert.match(md, /leading suspect is palar's own sandbox/i);
+  assert.match(md, /read-only mount/);
+  assert.match(md, /no DNS/);
+});
+
+test("an inconclusive probe leaves its static finding listed under STATIC-ONLY", () => {
+  // Same rule as not-tested: the field was never exercised, so the static
+  // hypothesis is still unsettled and must appear in the unexamined list.
+  const md = renderLiveMarkdownReport(
+    staticResult([finding("browser_navigate", "url")]),
+    liveResult([inconclusiveProbe()])
+  );
+  assert.match(md, /## STATIC-ONLY[^]*\[HIGH\] IV-001/);
+  assert.match(md, /NOT TESTED or INCONCLUSIVE above/);
+});
+
+test("a rejected probe backed by a clean control says so in its heading", () => {
+  const md = renderLiveMarkdownReport(
+    staticResult([]),
+    liveResult([
+      probe({
+        control: {
+          attempted: true,
+          outcome: "succeeded",
+          args: { path: "palar-live-probe" },
+          toolCall: { isError: false, textPreview: "ok" },
+          durationMs: 6,
+        },
+      }),
+    ])
+  );
+  assert.match(md, /\[ATTEMPTED — REJECTED BY TARGET \(control call ran clean\)\] read_file\.path/);
+  assert.match(md, /came back clean, so the tool does run in this environment/);
+});
+
+test("an ungated rejected probe says no control was sent, and why", () => {
+  const md = renderLiveMarkdownReport(
+    staticResult([]),
+    liveResult([
+      probe({
+        toolName: "delete_file",
+        control: { attempted: false, reason: 'the tool name contains "delete"' },
+      }),
+    ])
+  );
+  assert.match(md, /\(NOT CONTROLLED\)/);
+  assert.match(md, /No control call was sent for this tool/);
+  assert.match(md, /the tool name contains "delete"/);
+});
+
+test("the coverage headline states exercised vs total", () => {
+  const md = renderLiveMarkdownReport(
+    staticResult([]),
+    liveResult([probe({}), inconclusiveProbe(), notTestedProbe()])
+  );
+  assert.match(md, /## COVERAGE/);
+  // 3 probes, only the plain rejected one exercised its field.
+  assert.match(md, /\*\*1 of 3 probe\(s\) actually exercised the field\.\*\*/);
+});
+
+test("a scan where nothing was exercised says so in the coverage headline", () => {
+  const md = renderLiveMarkdownReport(
+    staticResult([]),
+    liveResult([inconclusiveProbe(), notTestedProbe()])
+  );
+  assert.match(md, /\*\*0 of 2 probe\(s\) actually exercised the field\.\*\*/);
+  assert.match(md, /That is not a clean result; it is no result\./);
 });

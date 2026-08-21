@@ -162,10 +162,13 @@ function orphanConfirmedFinding(probe: LiveProbeResult, file: string): Finding {
  * with an error, and that single boolean spans a handler refusal, a bounce
  * on a rule the schema never declared, and an injected command that ran
  * and exited nonzero. Downgrading on it would be reading a successful
- * injection as a clean result. `not-tested` is untouched for the opposite
- * reason: the call never reached the field, so there is no observation to
- * act on at all, and the static hypothesis is left standing exactly as the
- * static pass wrote it.
+ * injection as a clean result. `not-tested` and `inconclusive` are
+ * untouched for the opposite reason: in both, the field was never
+ * exercised, so there is no observation to act on at all and the static
+ * hypothesis is left standing exactly as the static pass wrote it. The
+ * two differ only in whose fault that was — palar's own invalid arguments
+ * for the first, a tool that could not run in this environment for the
+ * second — and neither is a fact about how the target handles the payload.
  */
 export function escalateConfirmedFindings(
   staticResult: AuditResult,

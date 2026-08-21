@@ -10,6 +10,77 @@ upgrading a CI gate.
 
 ### Behaviour changes
 
+- **`palar live` may now send one extra call per errored tool: a benign
+  *control call*.** Same tool, schema-valid benign arguments, no payload,
+  used to tell "the target refused our payload" apart from "this tool could
+  not run here at all". It is gated (see below), sent only for a probe that
+  would otherwise read `rejected`, sent only after that probe, and made at
+  most once per tool per scan. Bounded by the new `--control-timeout-ms`,
+  which defaults to `--callback-timeout-ms`.
+
+- **New probe status `inconclusive`, and it can change a CI exit code.** A
+  probe whose error is matched by an errored control call is no longer
+  reported as `rejected`. It resolves between `not-tested` and `rejected`,
+  is excluded from coverage, and escalates no severity. A run in which no
+  probe exercised its field now exits `2` — previously that required every
+  probe to be `NOT TESTED`, and an all-`inconclusive` run would have exited
+  `0`. There is deliberately **no majority threshold**: partial coverage is
+  reported as a count, never as a pass/fail cliff.
+
+- **`rejected` is now rendered in two tiers.** A rejection backed by a
+  clean control call reads `(control call ran clean)`; one where the gate
+  withheld the control reads `(NOT CONTROLLED)`. Anything parsing report
+  headings should expect the suffix.
+
+- **`runPoisoningCheck` no longer calls every poisoned tool.** That path
+  has always sent a benign call with no side-effect gate at all — it
+  predates the gate — and it is now gated by the same rule as the control
+  call. A poisoned tool that the gate refuses reports the poisoning (which
+  rests on the description, not on calling anything) and states that no
+  direct call was made. Its behavioural sample is genuinely lost.
+
+### The control-call gate
+
+An annotation may only ever **subtract** permission, never grant it:
+
+- `destructiveHint: true` vetoes. A danger claim is trusted because it
+  costs the declarer something.
+- A *safety* claim (`readOnlyHint: true`, `destructiveHint: false`) grants
+  nothing, ever. It is exactly what a hostile server would write.
+- Silence grants nothing either — the spec's default for an undeclared
+  `destructiveHint` is `true`.
+
+Permission comes from containment instead. **SSE targets are refused
+outright** (no sandbox exists to bound the call), as is any tool whose name
+matches palar's own destructive-verb list. Known incoherence, recorded in
+`live/control.ts` rather than hidden: the *probe* path has no transport
+branch, so an SSE target already receives injection payloads. That is a
+separate decision and was not made here.
+
+### Added
+
+- `live/control.ts` — the control call, its gate, and shared benign
+  argument construction.
+- `live/coverage.ts` — "how many probes actually exercised their field",
+  extracted so the exit-code rule is testable without running the CLI.
+- A COVERAGE headline in the live report and a `coverage: N/M` line on the
+  CLI, printed whenever probing happened.
+- `--control-timeout-ms`.
+
+### Notes
+
+Measured, not estimated: the probing phase is ~99% oracle-callback wait
+(`waitForCallback` resolves only on a callback or the full timeout, so 12
+probes x 4s accounts for the 48-49s phase). A control call has no callback
+wait, so its marginal cost is one bare round trip — median 6ms, max 70ms
+over 15 calls against the `vuln-server` fixture in the real sandbox. The
+timeout exists for tools that *block*, not for ones that are slow.
+
+`inconclusive` establishes only that the payload was not the cause. It does
+not say why, and the leading suspect is usually palar's own sandbox — no
+egress, read-only mount, dropped capabilities, no DNS — rather than the
+target. Every inconclusive entry in the report says so.
+
 - **Scores can move on a server that declares annotations or a title, with
   no flag changing.** Two new finding sources exist: `TA-101` (live only,
   `high` · `CONFIRMED`) and the `TS-*` rules now scanning `title`. Because

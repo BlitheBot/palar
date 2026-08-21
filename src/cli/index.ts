@@ -21,6 +21,7 @@ import {
   saveSnapshot,
 } from "../core/snapshot.js";
 import { runLiveScan } from "../live/liveScan.js";
+import { summarizeProbeCoverage } from "../live/coverage.js";
 import { escalateConfirmedFindings } from "../live/escalate.js";
 import {
   describeSource,
@@ -738,6 +739,14 @@ addLimitOptions(
       4_000
     )
     .option(
+      "--control-timeout-ms <n>",
+      "ceiling for one benign control call — the payload-free call palar sends to a tool " +
+        "whose probe errored, to tell 'the target refused our payload' apart from 'this tool " +
+        "could not run here at all'. Defaults to --callback-timeout-ms, which keeps a " +
+        "controlled probe costing about what an ordinary probe already costs",
+      positiveInt
+    )
+    .option(
       "--oracle-host <host>",
       "host the callback listener binds to for SSE targets (stdio targets bind to whatever address is actually reachable on this Docker backend, chosen automatically)",
       "127.0.0.1"
@@ -754,6 +763,7 @@ addLimitOptions(
       connectTimeoutMs: number;
       containerStartTimeoutMs: number;
       callbackTimeoutMs: number;
+      controlTimeoutMs?: number;
       oracleHost: string;
       json?: boolean;
       out?: string;
@@ -872,6 +882,7 @@ addLimitOptions(
           connectTimeoutMs: opts.connectTimeoutMs,
           containerStartTimeoutMs: opts.containerStartTimeoutMs,
           callbackTimeoutMs: opts.callbackTimeoutMs,
+          controlTimeoutMs: opts.controlTimeoutMs,
           oracleHost: opts.oracleHost,
           // First run only, and otherwise entirely silent for minutes.
           onImageBuild: (image) =>
@@ -980,10 +991,20 @@ addLimitOptions(
       //   2 — palar examined nothing. Three ways to arrive here, all the
       //       same event: no target was reached at all, every target that
       //       was reached exposed zero tools, or probes were attempted and
-      //       every one of them was NOT TESTED. Same category as `scan`'s
-      //       never-reached and given the same code for the same reason —
-      //       a scan that examined nothing must not exit 0 alongside a
-      //       scan that examined everything and found it clean.
+      //       not one of them exercised its field — every probe was either
+      //       NOT TESTED (palar's own arguments were invalid) or
+      //       INCONCLUSIVE (the tool could not run there at all). Same
+      //       category as `scan`'s never-reached and given the same code
+      //       for the same reason — a scan that examined nothing must not
+      //       exit 0 alongside a scan that examined everything and found
+      //       it clean.
+      //
+      //       Deliberately all-or-nothing, with NO majority threshold. A
+      //       "most probes were unexamined" cliff would put a magic number
+      //       (50%? 70%?) into a CI-visible exit code, and no value for it
+      //       is defensible. Partial coverage is reported as a count
+      //       instead — loudly, in the report's COVERAGE headline and in
+      //       the warning below — and the reader draws their own line.
       //   0 — at least one target was reached and probing really happened.
       //       Partial coverage is a warning, not a failure: whatever did
       //       run really ran, and its findings stand.
@@ -997,7 +1018,10 @@ addLimitOptions(
       // so `live` folds its own zero-tools case into 2 rather than matching
       // `scan`'s numbering and turning a coverage gap into a confirmation.
       const allProbes = liveResults.flatMap((live) => live.probes);
-      const notTested = allProbes.filter((p) => p.status === "not-tested");
+      // The rule itself lives in live/coverage.ts so it can be tested
+      // without running the CLI — see that module on why there is no
+      // majority threshold here.
+      const coverage = summarizeProbeCoverage(allProbes);
 
       if (anyConfirmed) {
         logStatus(
@@ -1015,22 +1039,36 @@ addLimitOptions(
               `which is the only thing this command exists to check.`
           )
         );
-      } else if (allProbes.length > 0 && notTested.length === allProbes.length) {
+      } else if (coverage.examinedNothing) {
         process.exitCode = 2;
         logStatus(
           chalk.red(
-            `Failing: all ${allProbes.length} probe(s) were NOT TESTED — every call failed with ` +
-              `palar's own arguments already violating the target's declared schema, so no ` +
-              `field was exercised and nothing was learned. This is not a clean result; it is ` +
-              `no result. See the NOT TESTED section for the constraints palar could not satisfy.`
+            `Failing: 0 of ${coverage.total} probe(s) exercised the field — ` +
+              `${coverage.notTested} NOT TESTED (palar's own arguments violated the target's ` +
+              `declared schema) and ${coverage.inconclusive} INCONCLUSIVE (a benign control ` +
+              `call to the same tool errored too, so the tool could not run there at all). ` +
+              `Nothing was learned. This is not a clean result; it is no result.`
           )
         );
-      } else if (notTested.length > 0) {
+      } else if (coverage.unexamined > 0) {
         logStatus(
           chalk.yellow(
-            `warning: ${notTested.length} of ${allProbes.length} probe(s) were NOT TESTED — ` +
-              `palar's arguments violated the target's declared schema, so those fields were ` +
-              `never exercised. Their static findings remain unverified.`
+            `warning: only ${coverage.exercised} of ${coverage.total} probe(s) exercised the ` +
+              `field — ${coverage.notTested} NOT TESTED, ${coverage.inconclusive} ` +
+              `INCONCLUSIVE. Those fields were never exercised and their static findings ` +
+              `remain unverified.`
+          )
+        );
+      }
+
+      // Printed for every run that probed anything, pass or fail. The
+      // coverage number is the one figure that separates "we looked and
+      // found nothing" from "we did not really look", and a reader who
+      // only sees the exit code should still see it.
+      if (coverage.exercised > 0) {
+        logStatus(
+          chalk.dim(
+            `coverage: ${coverage.exercised}/${coverage.total} probe(s) actually exercised the field`
           )
         );
       }

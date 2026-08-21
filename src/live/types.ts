@@ -14,12 +14,56 @@ import type { ProbeArgumentIssue, ProbeKind } from "./probes.js";
  * target is safe (it spans four different situations, one of which is a
  * successful injection) and must never downgrade or suppress a finding.
  *
- * "not-tested" is the one status that is not about the target at all: it
- * records that the call failed with palar's own arguments already known to
- * violate the target's declared schema, so the probed field was never
- * exercised and nothing was learned about it either way.
+ * Two of these are not about the target at all, and both exist to stop a
+ * failure palar caused from reading as a failure the target chose:
+ *
+ *   "not-tested"   — the call failed with palar's own arguments already
+ *                    known to violate the target's declared schema, so the
+ *                    probed field was never exercised.
+ *   "inconclusive" — a benign control call to the same tool errored too,
+ *                    so the tool could not run here at all and the payload
+ *                    was never the thing being answered. See control.ts.
  */
-export type ProbeStatus = "confirmed" | "not-tested" | "rejected" | "unconfirmed";
+export type ProbeStatus =
+  | "confirmed"
+  | "not-tested"
+  | "inconclusive"
+  | "rejected"
+  | "unconfirmed";
+
+/**
+ * What happened when palar sent this tool a benign, payload-free control
+ * call — or why it declined to.
+ *
+ * Deliberately a separate field rather than another ProbeStatus value.
+ * "no control was attempted" is not a third outcome of the probe, it is a
+ * missing piece of evidence ABOUT the probe, and folding it into the
+ * status would make an ungated tool indistinguishable from one that passed
+ * a control. That distinction is the whole point of the two-tier rendering
+ * in report.ts: a reader who knows palar runs controls must not read every
+ * "rejected" as controlled.
+ */
+export type ControlCall =
+  | {
+      attempted: false;
+      /** Why the gate withheld it — rendered verbatim. See control.ts. */
+      reason: string;
+    }
+  | {
+      attempted: true;
+      /**
+       * "succeeded" — the benign call came back without an error result,
+       * so the tool DOES run here and the probe's error is the target
+       * answering the payload. This is what earns a `rejected`.
+       * "errored" — the benign call errored, timed out, or failed in
+       * transport. The tool did not run here for reasons that have nothing
+       * to do with the payload, and the probe resolves `inconclusive`.
+       */
+      outcome: "succeeded" | "errored";
+      args: Record<string, unknown>;
+      toolCall: ToolCallCapture | { error: string };
+      durationMs: number;
+    };
 
 export interface ToolCallCapture {
   isError?: boolean;
@@ -45,6 +89,17 @@ export interface LiveProbeResult {
   callback: CallbackEvent | null;
   callbackTimeoutMs: number;
   toolCall: ToolCallCapture | { error: string };
+  /**
+   * The benign control call for this probe's tool, or why none was sent.
+   * Null when the question never arose — a probe that confirmed, was
+   * not-tested, or went unconfirmed has no error needing an explanation,
+   * and control.ts is never consulted for it.
+   *
+   * Shared across every probe on the same tool: one control result answers
+   * "does this tool run here at all" for all of them, so it is resolved
+   * once per tool per scan and copied.
+   */
+  control: ControlCall | null;
 }
 
 export interface PoisoningLiveCheck {
@@ -54,6 +109,16 @@ export interface PoisoningLiveCheck {
   /** null when there's no static definition of this tool to compare against. */
   liveDescriptionMatchesStatic: boolean | null;
   toolCall: ToolCallCapture | { error: string } | null;
+  /**
+   * Why no direct call was made, when the control gate withheld it.
+   * Null when the call went ahead.
+   *
+   * This check has always sent a benign call to any tool with a poisoned
+   * description, and it did so with no gate at all — it predates the gate.
+   * It is now gated by the same rule as the control call, because a
+   * side-effect gate with a second, older path around it is not a gate.
+   */
+  withheldReason: string | null;
 }
 
 export interface ToolDriftEntry {
