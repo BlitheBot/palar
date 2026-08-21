@@ -110,10 +110,29 @@ export const networkBoundsRule: ServerRule = {
     const exposedHosts = Array.isArray(network?.exposedHosts)
       ? network.exposedHosts
       : [];
-    exposedHosts.forEach((rawHost, index) => {
+    exposedHosts.forEach((rawHost) => {
       if (typeof rawHost !== "string") return;
       const host = normalizeHost(rawHost);
-      const hostPath = `${basePath}.exposedHosts[${index}]`;
+      // Selected by VALUE, not by array position.
+      //
+      // This was `exposedHosts[${index}]` and that was the one path shape
+      // in the codebase a reader could not rely on: reordering the array
+      // moves every finding's path without changing a single host, so
+      // anything that remembers a path across runs — an acknowledgement in
+      // .palarrc.json above all — would silently start pointing at a
+      // DIFFERENT host rather than failing to match. A key that quietly
+      // matches the wrong thing is worse than one that stops matching, and
+      // an index is the only construct here that fails that way.
+      //
+      // The raw string is used rather than the normalized one because a
+      // jsonPath answers "where is this in the file", and the file
+      // contains what the author wrote. Note two identical entries produce
+      // two findings sharing one path: that is the same defect listed
+      // twice, and one acknowledgement covering both is correct.
+      //
+      // input-validation.ts already avoided indices for array traversal
+      // (`${path}[]`, :210); this brings the last outlier into line.
+      const hostPath = `${basePath}.exposedHosts[${JSON.stringify(rawHost)}]`;
       if (isLoopback(host, net)) {
         findings.push({
           ruleId: "NB-003",
@@ -125,8 +144,8 @@ export const networkBoundsRule: ServerRule = {
           severity: "critical",
           title: `Server "${server.name}" exposes loopback host "${rawHost}"`,
           detail:
-            `Entry ${index} of network.exposedHosts on server "${server.name}" ` +
-            `is "${rawHost}", a loopback address. Exposing loopback lets callers ` +
+            `network.exposedHosts on server "${server.name}" lists ` +
+            `"${rawHost}", a loopback address. Exposing loopback lets callers ` +
             `reach services on the host machine that were never meant to be ` +
             `remotely accessible.`,
           location: { file: ctx.file, jsonPath: hostPath },
@@ -145,8 +164,8 @@ export const networkBoundsRule: ServerRule = {
           severity: "high",
           title: `Server "${server.name}" exposes private-network host "${rawHost}"`,
           detail:
-            `Entry ${index} of network.exposedHosts on server "${server.name}" ` +
-            `is "${rawHost}", which sits in private or link-local address space. ` +
+            `network.exposedHosts on server "${server.name}" lists ` +
+            `"${rawHost}", which sits in private or link-local address space. ` +
             `Exposing it gives callers a path onto the internal network (and, for ` +
             `169.254.x.x, potentially a cloud metadata endpoint).`,
           location: { file: ctx.file, jsonPath: hostPath },

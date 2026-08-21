@@ -158,3 +158,107 @@ test("loadConfigFile auto-discovers .palarrc.json and errors on missing explicit
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Acknowledgements.
+//
+// Validated harder than any other config key, because this is the one that
+// decides which findings stop failing a build. A malformed entry must
+// never degrade into a permissive one.
+// ---------------------------------------------------------------------------
+
+function ackConfig(entry: unknown): unknown {
+  return { configVersion: 1, acknowledgements: [entry] };
+}
+
+const VALID_ACK = {
+  ruleId: "IV-001",
+  jsonPath: 'tools["start_process"].inputSchema.properties.command',
+  reason: "shell tool; execution is the product",
+  added: "2026-08-01",
+};
+
+test("a valid acknowledgement resolves", () => {
+  const config = resolveConfig(ackConfig(VALID_ACK));
+  assert.equal(config.acknowledgements.length, 1);
+  assert.equal(config.acknowledgements[0]!.ruleId, "IV-001");
+});
+
+test("acknowledgements default to empty", () => {
+  assert.deepEqual(resolveConfig({ configVersion: 1 }).acknowledgements, []);
+});
+
+test("a missing reason is rejected rather than defaulted", () => {
+  // The reason IS the feature. An acknowledgement without one is a
+  // suppression with extra steps.
+  const { reason, ...noReason } = VALID_ACK;
+  assert.throws(() => resolveConfig(ackConfig(noReason)), /reason.*required/);
+});
+
+test("a missing added date is rejected", () => {
+  const { added, ...noAdded } = VALID_ACK;
+  assert.throws(() => resolveConfig(ackConfig(noAdded)), /added.*required/);
+});
+
+test("a non-date added is rejected", () => {
+  assert.throws(
+    () => resolveConfig(ackConfig({ ...VALID_ACK, added: "last tuesday" })),
+    /real calendar date/
+  );
+});
+
+test("an impossible calendar date is rejected", () => {
+  // Date() would roll 2026-02-31 into March rather than failing.
+  assert.throws(
+    () => resolveConfig(ackConfig({ ...VALID_ACK, added: "2026-02-31" })),
+    /real calendar date/
+  );
+});
+
+test("an unknown key in an acknowledgement is rejected", () => {
+  assert.throws(
+    () => resolveConfig(ackConfig({ ...VALID_ACK, severity: "low" })),
+    /unknown key "severity"/
+  );
+});
+
+test("acceptsConfirmed without expires is rejected", () => {
+  assert.throws(
+    () => resolveConfig(ackConfig({ ...VALID_ACK, acceptsConfirmed: true })),
+    /"expires" is required/
+  );
+});
+
+test("acceptsConfirmed with a distant expiry is rejected", () => {
+  // Otherwise "expiry required" is satisfied by writing 2099-01-01, which
+  // is no expiry wearing a costume.
+  assert.throws(
+    () =>
+      resolveConfig(
+        ackConfig({ ...VALID_ACK, acceptsConfirmed: true, expires: "2099-01-01" })
+      ),
+    /exceeds the 366-day maximum/
+  );
+});
+
+test("acceptsConfirmed with a reasonable expiry is accepted", () => {
+  const config = resolveConfig(
+    ackConfig({ ...VALID_ACK, acceptsConfirmed: true, expires: "2027-01-01" })
+  );
+  assert.equal(config.acknowledgements[0]!.acceptsConfirmed, true);
+  assert.equal(config.acknowledgements[0]!.expires, "2027-01-01");
+});
+
+test("an expiry before the added date is rejected", () => {
+  assert.throws(
+    () => resolveConfig(ackConfig({ ...VALID_ACK, expires: "2026-07-01" })),
+    /before "added"/
+  );
+});
+
+test("acknowledgements must be an array", () => {
+  assert.throws(
+    () => resolveConfig({ configVersion: 1, acknowledgements: {} }),
+    /must be an array/
+  );
+});

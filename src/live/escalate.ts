@@ -94,6 +94,13 @@ function confirmFinding(finding: Finding, probe: LiveProbeResult): Finding {
   return {
     ...finding,
     ruleId: CONFIRMED_RULE_ID,
+    // The ONE place in the codebase that rewrites a ruleId, and therefore
+    // the one place that has to record what it rewrote. Without this the
+    // static id is recoverable only from the prose in `detail` below, and
+    // an acknowledgement written against that id would silently stop
+    // matching the instant a callback proved the finding real. See
+    // core/types.ts's SupersededRuleIds.
+    supersedes: [...(finding.supersedes ?? []), finding.ruleId],
     severity: "critical",
     // The one place in the codebase entitled to claim this. Everything
     // else palar reports is read from a file; this is read from a socket

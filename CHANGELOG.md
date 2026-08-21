@@ -10,6 +10,49 @@ upgrading a CI gate.
 
 ### Behaviour changes
 
+- **BREAKING (report/JSON output): `exposedHosts` findings are now addressed
+  by value, not by array index.** `servers["s"].network.exposedHosts[0]`
+  becomes `servers["s"].network.exposedHosts["10.0.0.5"]`. An index-based
+  path is the one shape that can silently point at a *different* host after
+  a harmless reorder, which would move an acknowledgement onto something
+  nobody accepted. Nothing inside palar consumed the old shape — snapshots
+  store tools only and never findings or paths, and the two structural
+  jsonPath parsers (`live/escalate.ts`, `live/report.ts`) anchor on
+  `tools[...]` — so no stored baseline breaks. Downstream tooling parsing
+  `--json` for that literal path is the one thing that will notice.
+
+- **`Finding` gained `supersedes`.** `live/escalate.ts` rewrites a static
+  ruleId into the confirmed one (`IV-001` → `IV-101`) on the same field,
+  and that provenance was previously recoverable only from prose inside
+  `detail`. It is now structured, so anything matching findings across runs
+  can follow the chain.
+
+- **New `.palarrc.json` key: `acknowledgements`.** Findings a project has
+  accepted, with a reason. Old configs are unaffected (`configVersion`
+  stays `1`).
+
+### Added
+
+- **Acknowledgements** — see README's "Accepting a finding you already know
+  about". Keyed on `(ruleId, jsonPath)` with supersession aliasing and
+  optional `file` narrowing; `reason` and `added` required; `expires`
+  optional but required and ~1-year-capped for `acceptsConfirmed`; 90-day
+  staleness and 14-day pre-expiry warnings; unmatched entries surfaced
+  always with fixed-vs-moved detection, fatal under
+  `--strict-acknowledgements`, and quieted for live-only rule ids during a
+  static scan.
+- `--strict-acknowledgements` on `scan` and `live`.
+- A loud **ACCEPTED** section in the Markdown report; `accepted` on findings
+  in `--json`.
+
+### What acceptance deliberately does NOT do
+
+It does not remove a finding, discount it, change its severity or
+confidence, or move the score or the grade. `confirmedForcesF()` is
+untouched and unreachable from config: a callback-proven finding still
+grades F no matter what `.palarrc.json` says. Acceptance changes only
+whether `--fail-on` fails the build.
+
 - **`palar live` may now send one extra call per errored tool: a benign
   *control call*.** Same tool, schema-valid benign arguments, no payload,
   used to tell "the target refused our payload" apart from "this tool could

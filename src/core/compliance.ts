@@ -231,6 +231,78 @@ const CONFIDENCE_BLURBS: Record<Confidence, string> = {
     "cannot from a file alone. Worth looking at; not a demonstrated defect.",
 };
 
+/**
+ * The acceptance note attached to a finding wherever it is rendered.
+ *
+ * Deliberately not quiet. An accepted finding is one somebody decided to
+ * ship with, and the report's job is to make that decision legible to the
+ * next person — the reason, who dated it, and when it lapses. A confirmed
+ * acceptance says so at full volume, because "we are shipping a defect
+ * palar proved by callback" is the single most consequential sentence this
+ * tool can print.
+ */
+function renderAcceptance(finding: Finding): string[] {
+  const mark = finding.accepted;
+  if (!mark) return [];
+  const lines: string[] = [];
+  lines.push(`- **Accepted:** ${mark.reason}`);
+  const expiry =
+    mark.expires === undefined
+      ? "no expiry set"
+      : `expires ${mark.expires}` +
+        (mark.daysUntilExpiry === undefined ? "" : ` (${mark.daysUntilExpiry} day(s) away)`);
+  lines.push(`- **Acknowledged:** ${mark.added} · ${expiry}`);
+  if (mark.acceptsConfirmed) {
+    lines.push("");
+    lines.push(
+      "  **This is a CONFIRMED finding that the project has accepted.** palar sent a payload " +
+        "and an out-of-band callback carrying that probe's nonce came back — this behaviour " +
+        "was demonstrated, not inferred. The build passes because `.palarrc.json` accepts it. " +
+        "**The grade is still F**, and acceptance did not change the score, the severity, or " +
+        "the confidence: it changed only whether the build fails."
+    );
+  }
+  return lines;
+}
+
+/**
+ * The ACCEPTED roll-up.
+ *
+ * Placed above the pillar sections rather than below them: a reader
+ * scanning a report with a failing grade and a passing build needs to know
+ * why before they read anything else, and burying the explanation under
+ * the findings is how "the build is green, ignore the F" becomes folklore.
+ */
+function renderAcceptedSection(result: AuditResult): string[] {
+  const accepted = result.findings.filter((f) => f.accepted);
+  if (accepted.length === 0) return [];
+  const confirmed = accepted.filter((f) => f.confidence === "confirmed").length;
+  const lines: string[] = [];
+  lines.push("## ACCEPTED — known, and shipped anyway");
+  lines.push("");
+  lines.push(
+    `${accepted.length} finding(s) are acknowledged in this project's configuration` +
+      (confirmed > 0 ? `, ${confirmed} of them CONFIRMED` : "") +
+      `. They are still counted, still scored, and still listed below with their full ` +
+      `severity — acceptance changes only whether the build fails, never what palar found. ` +
+      `The grade above is unaffected.`
+  );
+  lines.push("");
+  lines.push("| Rule | Location | Reason | Since | Expires |");
+  lines.push("| --- | --- | --- | --- | --- |");
+  for (const f of accepted) {
+    const mark = f.accepted!;
+    const cell = (text: string): string => escapeSuspicious(text).replace(/\|/g, "\\|");
+    lines.push(
+      `| ${f.ruleId}${f.confidence === "confirmed" ? " · **CONFIRMED**" : ""} ` +
+        `| \`${cell(f.location.jsonPath ?? f.location.file)}\` | ${cell(mark.reason)} ` +
+        `| ${mark.added} | ${mark.expires ?? "—"} |`
+    );
+  }
+  lines.push("");
+  return lines;
+}
+
 function renderFinding(finding: Finding): string {
   const lines: string[] = [];
   const location = finding.location.jsonPath
@@ -241,11 +313,15 @@ function renderFinding(finding: Finding): string {
   // shell" and "[MEDIUM] this key is in your file" are different sentences,
   // and a reader skimming headings has to be able to tell them apart.
   lines.push(
-    `### [${finding.severity.toUpperCase()} · ${CONFIDENCE_LABELS[finding.confidence]}] ` +
-      `${finding.ruleId}: ${finding.title}`
+    `### [${finding.severity.toUpperCase()} · ${CONFIDENCE_LABELS[finding.confidence]}` +
+      `${finding.accepted ? " · ACCEPTED" : ""}] ${finding.ruleId}: ${finding.title}`
   );
   lines.push("");
   lines.push(`- **Location:** ${location}`);
+  // In the heading AND inline, because the pillar sections are where a
+  // reader actually reads findings — an ACCEPTED section elsewhere is a
+  // summary, not a substitute for the finding saying so where it lives.
+  lines.push(...renderAcceptance(finding));
   if (finding.complianceRefs && finding.complianceRefs.length > 0) {
     lines.push(`- **Compliance:** ${finding.complianceRefs.join(", ")}`);
   }
@@ -309,6 +385,8 @@ export function renderMarkdownReport(result: AuditResult): string {
     );
     lines.push("");
   }
+
+  lines.push(...renderAcceptedSection(result));
 
   if (result.findings.length === 0) {
     lines.push("No findings. 🎉");

@@ -153,6 +153,30 @@ export interface FindingLocation {
  */
 export type Confidence = "confirmed" | "observed" | "hypothesized";
 
+/**
+ * Rule ids this finding used to carry, innermost-first.
+ *
+ * A finding's `ruleId` is not stable across runs: when a live callback
+ * confirms a static hypothesis, live/escalate.ts replaces the static id
+ * (`IV-001`) with the confirmed one (`IV-101`) on the same field. Same
+ * defect, same location, two ids depending on whether `scan` or `live`
+ * produced the report.
+ *
+ * That is invisible until something tries to REMEMBER a finding across
+ * runs, and then it is a silent-mismatch bug: an acknowledgement written
+ * against `IV-001` stops matching the moment the finding is proven, which
+ * is the exact moment it matters most. The provenance was previously kept
+ * only as prose inside `detail`, which is not something matching logic can
+ * read.
+ *
+ * So the chain is structured. Absent means this finding was emitted under
+ * its own id and never rewritten — which is every finding except the ones
+ * escalate.ts rewrites, including the confirmed findings it synthesizes
+ * from scratch (those had no predecessor, and inventing one would claim a
+ * history that did not happen).
+ */
+export type SupersededRuleIds = string[];
+
 /** A single issue reported by a rule. */
 export interface Finding {
   ruleId: string;
@@ -165,6 +189,31 @@ export interface Finding {
   location: FindingLocation;
   remediation?: string;
   complianceRefs?: string[];
+  /** Rule ids this finding previously carried. See SupersededRuleIds. */
+  supersedes?: SupersededRuleIds;
+  /**
+   * Set only by core/acknowledgements.ts, never by a rule. Records that
+   * a .palarrc.json entry accepted this finding, and why.
+   *
+   * The finding stays in `findings` and keeps its severity, confidence and
+   * score contribution — acceptance is a statement about whether the BUILD
+   * should fail, not about whether the defect is real. See
+   * core/acknowledgements.ts.
+   */
+  accepted?: AcceptedMark;
+}
+
+/** Why a finding is accepted, carried into the report and --json verbatim. */
+export interface AcceptedMark {
+  reason: string;
+  /** ISO date (YYYY-MM-DD) the acknowledgement was written. */
+  added: string;
+  /** ISO date the acknowledgement stops applying, when one was set. */
+  expires?: string;
+  /** True when the acknowledgement explicitly opted in to covering a confirmed finding. */
+  acceptsConfirmed?: boolean;
+  /** Days until expiry, negative once past. Absent when no expiry was set. */
+  daysUntilExpiry?: number;
 }
 
 export type LetterGrade = "A" | "B" | "C" | "D" | "F";

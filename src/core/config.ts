@@ -6,6 +6,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Severity } from "./types.js";
+import {
+  MAX_CONFIRMED_ACCEPTANCE_DAYS,
+  parseIsoDate,
+  type Acknowledgement,
+} from "./acknowledgements.js";
 
 export interface HardeningLimits {
   /** Max definition file size in bytes; larger files are skipped with a warning. */
@@ -48,6 +53,12 @@ export interface ResolvedConfig {
   network: NetworkPatterns;
   /** Per-ruleId severity overrides applied to every emitted finding. */
   severityOverrides: Record<string, Severity>;
+  /**
+   * Findings this project has accepted, with a reason. Never changes the
+   * score or the grade — only whether the build fails. See
+   * core/acknowledgements.ts.
+   */
+  acknowledgements: Acknowledgement[];
   description: {
     /** Descriptions longer than this are flagged as a context-stuffing vector. */
     maxLength: number;
@@ -95,6 +106,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
     ],
   },
   severityOverrides: {},
+  acknowledgements: [],
   description: {
     // 4000 chars is ~1000 tokens for ONE tool description — above the 95th
     // percentile of real-world MCP tools measured across six published
@@ -132,6 +144,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "unicodeCategories",
   "network",
   "severityOverrides",
+  "acknowledgements",
   "description",
 ]);
 const CODE_POINT_RANGE = /^[0-9a-fA-F]{1,6}(-[0-9a-fA-F]{1,6})?$/;
@@ -171,6 +184,107 @@ function requireRegexArray(v: unknown, field: string, source: string): string[] 
     }
   }
   return arr;
+}
+
+const ACK_KEYS = new Set([
+  "ruleId",
+  "jsonPath",
+  "file",
+  "reason",
+  "added",
+  "expires",
+  "acceptsConfirmed",
+]);
+
+/**
+ * Validate the `acknowledgements` array.
+ *
+ * Strict on purpose, and louder than the rest of this file. Every other
+ * config key tunes how palar looks at things; this one decides which
+ * findings stop failing a build, so a malformed entry must never degrade
+ * into a permissive one. In particular a missing `reason` is rejected
+ * rather than defaulted: the reason is the entire value of the feature to
+ * the auditor reading the report later, and an acknowledgement without one
+ * is a suppression with extra steps.
+ */
+function requireAcknowledgements(v: unknown, source: string): Acknowledgement[] {
+  if (!Array.isArray(v)) fail(source, `"acknowledgements" must be an array`);
+  return (v as unknown[]).map((entry, index) => {
+    const at = `acknowledgements[${index}]`;
+    if (!isPlainObject(entry)) fail(source, `"${at}" must be an object`);
+    for (const key of Object.keys(entry)) {
+      if (!ACK_KEYS.has(key)) {
+        fail(source, `"${at}" has unknown key "${key}" (valid: ${[...ACK_KEYS].join(", ")})`);
+      }
+    }
+    for (const key of ["ruleId", "jsonPath", "reason", "added"]) {
+      const value = entry[key];
+      if (typeof value !== "string" || value.trim().length === 0) {
+        fail(source, `"${at}.${key}" is required and must be a non-empty string`);
+      }
+    }
+    if (entry.file !== undefined && (typeof entry.file !== "string" || entry.file.length === 0)) {
+      fail(source, `"${at}.file" must be a non-empty string when present`);
+    }
+    if (entry.acceptsConfirmed !== undefined && typeof entry.acceptsConfirmed !== "boolean") {
+      fail(source, `"${at}.acceptsConfirmed" must be a boolean when present`);
+    }
+
+    const added = parseIsoDate(entry.added as string);
+    if (!added) {
+      fail(source, `"${at}.added" must be a real calendar date as YYYY-MM-DD`);
+    }
+
+    let expires: Date | null = null;
+    if (entry.expires !== undefined) {
+      if (typeof entry.expires !== "string") {
+        fail(source, `"${at}.expires" must be a string when present`);
+      }
+      expires = parseIsoDate(entry.expires);
+      if (!expires) {
+        fail(source, `"${at}.expires" must be a real calendar date as YYYY-MM-DD`);
+      }
+    }
+
+    // The two rules that make "expiry required for confirmed" mean
+    // something. Without the cap, the requirement is satisfied by writing
+    // 2099-01-01, which is no expiry wearing a costume.
+    if (entry.acceptsConfirmed === true) {
+      if (!expires) {
+        fail(
+          source,
+          `"${at}" sets "acceptsConfirmed": true, so "expires" is required. Accepting a ` +
+            `finding palar proved by callback is allowed, but not indefinitely — it has to ` +
+            `come back for review.`
+        );
+      }
+      const span = Math.round((expires.getTime() - added.getTime()) / 86_400_000);
+      if (span > MAX_CONFIRMED_ACCEPTANCE_DAYS) {
+        fail(
+          source,
+          `"${at}.expires" is ${span} days after "added", which exceeds the ` +
+            `${MAX_CONFIRMED_ACCEPTANCE_DAYS}-day maximum for a confirmed acceptance. A very ` +
+            `distant expiry is the same as no expiry; shorten it.`
+        );
+      }
+      if (span < 0) {
+        fail(source, `"${at}.expires" is before "added"`);
+      }
+    } else if (expires) {
+      const span = Math.round((expires.getTime() - added.getTime()) / 86_400_000);
+      if (span < 0) fail(source, `"${at}.expires" is before "added"`);
+    }
+
+    return {
+      ruleId: entry.ruleId as string,
+      jsonPath: entry.jsonPath as string,
+      ...(entry.file !== undefined ? { file: entry.file as string } : {}),
+      reason: entry.reason as string,
+      added: entry.added as string,
+      ...(entry.expires !== undefined ? { expires: entry.expires as string } : {}),
+      ...(entry.acceptsConfirmed === true ? { acceptsConfirmed: true } : {}),
+    };
+  });
 }
 
 /**
@@ -273,6 +387,10 @@ export function resolveConfig(raw?: unknown, source = ""): ResolvedConfig {
         source
       );
     }
+  }
+
+  if (raw.acknowledgements !== undefined) {
+    config.acknowledgements = requireAcknowledgements(raw.acknowledgements, source);
   }
 
   if (raw.description !== undefined) {

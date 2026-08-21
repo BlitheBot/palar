@@ -133,3 +133,37 @@ test("non-array egressAllowlist does not throw and counts as missing", () => {
     ["NB-002"]
   );
 });
+
+test("exposedHosts findings are addressed by VALUE, not by array position", () => {
+  // An index-addressed path is the one shape that can silently point at a
+  // DIFFERENT host after a harmless reorder — which would move an
+  // acknowledgement onto something nobody accepted. The same two hosts in
+  // either order must produce the same two paths.
+  const forward = check({
+    name: "srv",
+    network: { ...filtered, exposedHosts: ["127.0.0.1", "10.0.0.5"] },
+  });
+  const reversed = check({
+    name: "srv",
+    network: { ...filtered, exposedHosts: ["10.0.0.5", "127.0.0.1"] },
+  });
+
+  const pathsOf = (findings: { location: { jsonPath?: string } }[]): string[] =>
+    findings.map((f) => f.location.jsonPath!).sort();
+
+  assert.deepEqual(pathsOf(forward), pathsOf(reversed));
+  assert.deepEqual(pathsOf(forward), [
+    'servers["srv"].network.exposedHosts["10.0.0.5"]',
+    'servers["srv"].network.exposedHosts["127.0.0.1"]',
+  ]);
+});
+
+test("no exposedHosts path contains an array index", () => {
+  const findings = check({
+    name: "srv",
+    network: { ...filtered, exposedHosts: ["127.0.0.1", "169.254.169.254"] },
+  });
+  for (const f of findings) {
+    assert.doesNotMatch(f.location.jsonPath!, /\[\d+\]/, f.location.jsonPath);
+  }
+});

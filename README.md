@@ -259,6 +259,78 @@ connect timeout that reads like a broken target. A target that starts and
 then dies has its own stderr attached to the failure, so "never reached"
 comes with the evidence.
 
+### Accepting a finding you already know about
+
+Some servers are legitimately destructive. desktop-commander's
+`start_process` confirms command injection on every run — correctly, because
+the tool is a shell and execution is the product — which pins the grade at
+F forever. Without a way to say "yes, we know, that's intended", the only
+options are to not run palar in CI or to ignore it there.
+
+`.palarrc.json` takes an `acknowledgements` list:
+
+```json
+{
+  "configVersion": 1,
+  "acknowledgements": [
+    {
+      "ruleId": "IV-001",
+      "jsonPath": "tools[\"start_process\"].inputSchema.properties.command",
+      "reason": "desktop-commander is a shell tool; command execution is the product. Egress is restricted at the host level.",
+      "added": "2026-08-21",
+      "expires": "2027-02-01",
+      "acceptsConfirmed": true
+    }
+  ]
+}
+```
+
+**An accepted finding does not disappear, and does not get discounted.** It
+stays in the findings list at full severity, keeps its confidence, and
+still counts toward the score. Acceptance changes exactly one thing:
+whether `--fail-on` fails the build. The report grows a loud ACCEPTED
+section carrying the reason, the date, and the expiry.
+
+That split is deliberate. The score answers *how much exposure is in this
+target*; acceptance answers *do we ship anyway*. If acceptance moved the
+number, a project could reach 100/A by editing its own config — and that
+number goes in README badges. desktop-commander stays 0/F, truthfully, and
+its build goes green, which is the team's call.
+
+**`confirmedForcesF()` is untouched.** A callback-proven finding still
+grades F with any config whatsoever, because acceptance never operates on
+grades. What it can do is let the build pass with that F on record — and
+only when the entry says `"acceptsConfirmed": true`, which the report then
+states at full volume and `--json` carries structurally so an org-level
+policy can refuse what one repo allowed.
+
+**Identity.** Entries are keyed on `(ruleId, jsonPath)`, with `file` as
+optional narrowing. Both parts are stable by construction: `jsonPath` is
+property- and value-addressed throughout (no array indices, so reordering
+`exposedHosts` cannot move an acknowledgement onto a different host), and
+`ruleId` matching follows the supersession chain — an entry written against
+the static `IV-001` still covers the `IV-101` that same finding becomes
+once a live callback proves it. Rule message wording, severity overrides
+and confidence are all excluded from the key precisely because they change.
+
+A renamed tool deliberately does *not* carry its acknowledgement across:
+the entry stops matching, the finding gates again, and palar reports the
+entry as unmatched with a **possible move** hint pointing at the new path.
+A renamed tool is a new review surface.
+
+**Rot.** `reason` and `added` are required. `expires` is optional in
+general — a hard expiry on everything just teaches people to write
+`2099-01-01` — but required for `acceptsConfirmed`, and capped at ~1 year
+so the requirement cannot be satisfied by a date a century out. palar warns
+90 days after `added` when there is no expiry, and 14 days before a set
+expiry lapses. An expired entry stops applying and says the *acceptance*
+lapsed rather than reporting a new problem.
+
+**Stale entries** are surfaced on every run, and `--strict-acknowledgements`
+makes them exit 1. Acknowledgements naming live-only rule ids (`IV-101`,
+`TA-101`) stay quiet during a static `scan`, where they could never have
+matched — warning about them on every run is how a warning gets ignored.
+
 #### Exit codes
 
 | Outcome | Exit | Score emitted? |

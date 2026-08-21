@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeScore } from "./compliance.js";
+import { computeScore, renderMarkdownReport } from "./compliance.js";
 import type {
+  AuditResult,
   Confidence,
   Finding,
   MCPServerConfig,
@@ -193,4 +194,78 @@ test("network-bounds stays an internal category, not an OWASP citation", () => {
   for (const finding of findings) {
     assert.deepEqual(finding.complianceRefs, ["palar:SSRF"]);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Accepted findings in the report.
+//
+// The rule under test is that acceptance is LOUD and CHANGES NOTHING about
+// the assessment. A reader must be able to see what was accepted, why, and
+// that the grade did not move on account of it.
+// ---------------------------------------------------------------------------
+
+function acceptedResult(over: Partial<Finding> = {}): AuditResult {
+  const finding: Finding = {
+    ruleId: "IV-101",
+    pillar: "schema-integrity",
+    severity: "critical",
+    confidence: "confirmed",
+    title: 'CONFIRMED command injection via "start_process.command"',
+    detail: "a callback came back",
+    location: {
+      file: "mcp.tools.json",
+      jsonPath: 'tools["start_process"].inputSchema.properties.command',
+    },
+    accepted: {
+      reason: "desktop-commander is a shell tool; execution is the product",
+      added: "2026-08-01",
+      expires: "2027-01-01",
+      acceptsConfirmed: true,
+      daysUntilExpiry: 133,
+    },
+    ...over,
+  };
+  return {
+    timestamp: "2026-08-21T00:00:00.000Z",
+    toolsScanned: 1,
+    serversScanned: 1,
+    findings: [finding],
+    score: computeScore([finding]),
+    warnings: [],
+  };
+}
+
+test("an accepted finding renders an ACCEPTED section with its reason", () => {
+  const md = renderMarkdownReport(acceptedResult());
+  assert.match(md, /## ACCEPTED — known, and shipped anyway/);
+  assert.match(md, /desktop-commander is a shell tool/);
+  assert.match(md, /2026-08-01/);
+  assert.match(md, /2027-01-01/);
+});
+
+test("an accepted CONFIRMED finding says the grade is still F", () => {
+  const result = acceptedResult();
+  assert.equal(result.score.grade, "F", "precondition: confirmedForcesF still applies");
+  const md = renderMarkdownReport(result);
+  assert.match(md, /grade is still F/);
+  assert.match(md, /CONFIRMED finding that the project has accepted/);
+});
+
+test("an accepted finding still appears in the pillar section at full severity", () => {
+  // It must not vanish into the ACCEPTED table. The value is an auditor
+  // seeing "known, accepted, because X" — not the finding disappearing.
+  const md = renderMarkdownReport(acceptedResult());
+  assert.match(md, /\[CRITICAL · CONFIRMED · ACCEPTED\] IV-101/);
+  assert.match(md, /\| critical \| 1 \|/);
+});
+
+test("acceptance does not change the score or the grade", () => {
+  const accepted = acceptedResult();
+  const notAccepted = acceptedResult({ accepted: undefined });
+  assert.deepEqual(accepted.score, notAccepted.score);
+});
+
+test("a report with no acceptances has no ACCEPTED section", () => {
+  const md = renderMarkdownReport(acceptedResult({ accepted: undefined }));
+  assert.doesNotMatch(md, /## ACCEPTED/);
 });

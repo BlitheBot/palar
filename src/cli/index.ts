@@ -8,6 +8,7 @@ import type { ResolvedConfig } from "../core/config.js";
 import { DEFAULT_LIMITS, loadConfigFile } from "../core/config.js";
 import { discover } from "../discovery/index.js";
 import { runAudit } from "../core/auditor.js";
+import { applyAcknowledgements } from "../core/acknowledgements.js";
 import { VERSION } from "../core/version.js";
 import {
   renderMarkdownReport,
@@ -107,6 +108,7 @@ interface ScanOpts extends LimitOpts {
   out?: string;
   failOn?: Severity;
   failOnEmpty?: boolean;
+  strictAcknowledgements?: boolean;
   fromUrl?: string;
   fromCommand?: string[];
   fromEnv?: string[];
@@ -378,18 +380,99 @@ async function scanFromLiveSource(
     config
   );
 
-  const doc: ScanJsonDocument = { outcome: "examined", ...audit };
+  // Acknowledgements applied before anything renders, so the report, the
+  // JSON body and the gate all see the same accepted marks.
+  const acked = applyAcks(audit, config, opts, logStatus, false);
+  const doc: ScanJsonDocument = { outcome: "examined", ...acked };
   await emitScanOutput(
     opts.json
       ? JSON.stringify(doc, null, 2)
       : `> Definitions enumerated live from ${source} — ` +
           `${result.tools.length} tool(s) in ${result.durationMs}ms, no manifest read.\n\n` +
-          renderMarkdownReport(audit),
+          renderMarkdownReport(acked),
     opts,
     logStatus
   );
 
-  reportScore(audit, opts, logStatus);
+  reportScore(acked, opts, logStatus);
+}
+
+/**
+ * Applies the project's acknowledgements and reports what happened to them.
+ *
+ * Called after the result is FINAL — for `live` that means after
+ * escalation, because escalate.ts rewrites ruleIds and an acknowledgement
+ * pass that ran first would match against ids about to change.
+ *
+ * Everything this prints is a warning rather than an error by default.
+ * The exception is unmatched entries under --strict-acknowledgements: a
+ * suppression file nobody prunes is the failure mode this whole feature
+ * has to avoid becoming, and a team that wants that enforced can ask.
+ */
+function applyAcks(
+  result: AuditResult,
+  config: ResolvedConfig,
+  opts: { strictAcknowledgements?: boolean },
+  logStatus: (message: string) => void,
+  live: boolean
+): AuditResult {
+  if (config.acknowledgements.length === 0) return result;
+
+  const outcome = applyAcknowledgements(result, config.acknowledgements, { live });
+
+  for (const warning of outcome.warnings) {
+    logStatus(chalk.yellow(`warning: ${warning}`));
+  }
+
+  // A refusal is an entry that found its finding and was not allowed to
+  // cover it. That is louder than an unmatched entry: the author believes
+  // this finding is accepted, and it is not.
+  for (const refusal of outcome.refusals) {
+    logStatus(
+      chalk.red(
+        `acknowledgement NOT applied for ${refusal.ack.ruleId} at ${refusal.ack.jsonPath}: ` +
+          refusal.reason
+      )
+    );
+  }
+
+  for (const entry of outcome.unmatched) {
+    const base =
+      `acknowledgement for ${entry.ack.ruleId} at ${entry.ack.jsonPath} matched no finding`;
+    const detail = entry.possibleMove
+      ? ` — but ${entry.possibleMove.ruleId} is present at ${entry.possibleMove.jsonPath}. ` +
+        `The finding may have MOVED (a renamed tool moves every path beneath it) rather than ` +
+        `been fixed; check before deleting this entry.`
+      : ` — the finding is gone. If it was fixed, delete this entry.`;
+    logStatus(
+      opts.strictAcknowledgements ? chalk.red(base + detail) : chalk.yellow(`warning: ${base}${detail}`)
+    );
+  }
+
+  if (opts.strictAcknowledgements && outcome.unmatched.length > 0) {
+    logStatus(
+      chalk.red(
+        `Failing: ${outcome.unmatched.length} acknowledgement(s) matched nothing and ` +
+          `--strict-acknowledgements is set`
+      )
+    );
+    process.exitCode = 1;
+  }
+
+  if (outcome.accepted.length > 0) {
+    const confirmed = outcome.accepted.filter((f) => f.confidence === "confirmed").length;
+    logStatus(
+      chalk.yellow(
+        `${outcome.accepted.length} finding(s) accepted by configuration` +
+          (confirmed > 0
+            ? `, ${confirmed} of them CONFIRMED — the grade is still ` +
+              `${result.score.grade} and the score is unchanged; only the build gate moved`
+            : "")
+      )
+    );
+  }
+
+  return outcome.result;
 }
 
 /** Prints the one-line score summary and applies --fail-on. */
@@ -409,14 +492,30 @@ function reportScore(
   );
 
   if (opts.failOn) {
-    const failing = result.findings.filter(
-      (f) => severityRank(f.severity) <= severityRank(opts.failOn!)
+    // Accepted findings are excluded HERE and nowhere else. This is the
+    // single point at which an acknowledgement has any effect: the score
+    // above already counted them, the grade already reflects them, and
+    // confirmedForcesF() already clamped on them. See
+    // core/acknowledgements.ts on why acceptance is a statement about the
+    // build rather than about the target.
+    const gating = result.findings.filter(
+      (f) => !f.accepted && severityRank(f.severity) <= severityRank(opts.failOn!)
     ).length;
-    if (failing > 0) {
+    const acceptedAtOrAbove = result.findings.filter(
+      (f) => f.accepted && severityRank(f.severity) <= severityRank(opts.failOn!)
+    ).length;
+    if (gating > 0) {
       logStatus(
-        chalk.red(`Failing: ${failing} finding(s) at or above '${opts.failOn}' severity`)
+        chalk.red(`Failing: ${gating} finding(s) at or above '${opts.failOn}' severity`)
       );
       process.exitCode = 1;
+    } else if (acceptedAtOrAbove > 0) {
+      logStatus(
+        chalk.yellow(
+          `Passing --fail-on '${opts.failOn}' with ${acceptedAtOrAbove} accepted finding(s) ` +
+            `at or above it. They are still in the report and still in the score.`
+        )
+      );
     }
   }
 }
@@ -487,6 +586,11 @@ addLimitOptions(
     ).choices(SEVERITY_ORDER)
   )
     .option("--fail-on-empty", "exit 1 when no definition files are discovered")
+    .option(
+      "--strict-acknowledgements",
+      'exit 1 when an entry in .palarrc.json\'s "acknowledgements" matches no finding ' +
+        "(by default an unmatched entry is only a warning)"
+    )
 ).action(
   async (operands: string[], opts: ScanOpts) => {
       const config = await loadCliConfig(opts);
@@ -583,7 +687,8 @@ addLimitOptions(
         return;
       }
 
-      const result = runAudit(discovered, config);
+      const audited = runAudit(discovered, config);
+      const result = applyAcks(audited, config, opts, logStatus, false);
       const doc: ScanJsonDocument = { outcome: "examined", ...result };
 
       await emitScanOutput(
@@ -753,6 +858,11 @@ addLimitOptions(
     )
     .option("--json", "output raw results as JSON")
     .option("--out <file>", "write the report to a file instead of stdout")
+    .option(
+      "--strict-acknowledgements",
+      'exit 1 when an entry in .palarrc.json\'s "acknowledgements" matches no finding ' +
+        "(by default an unmatched entry is only a warning)"
+    )
 ).action(
   async (
     paths: string[],
@@ -764,6 +874,7 @@ addLimitOptions(
       containerStartTimeoutMs: number;
       callbackTimeoutMs: number;
       controlTimeoutMs?: number;
+      strictAcknowledgements?: boolean;
       oracleHost: string;
       json?: boolean;
       out?: string;
@@ -907,7 +1018,17 @@ addLimitOptions(
       // loop above: the escalated result is global to the run, and one
       // finding must not read critical in one server's report and medium
       // in the next.
-      const escalated = escalateConfirmedFindings(staticResult, liveResults);
+      const escalatedRaw = escalateConfirmedFindings(staticResult, liveResults);
+      // Acknowledgements are applied AFTER escalation, never before, and
+      // that ordering is the whole reason the supersession chain exists:
+      // escalate.ts rewrites IV-001 into IV-101 on the same field, so an
+      // acknowledgement pass that ran first would be matching against ids
+      // that are about to change. Running it here means an entry written
+      // against either id covers the finding — see
+      // core/acknowledgements.ts. `live: true` also un-quiets the
+      // unmatched-entry reporting for live-only rule ids, which cannot
+      // match at all during a static scan.
+      const escalated = applyAcks(escalatedRaw, config, opts, logStatus, true);
       const countCritical = (r: typeof staticResult): number =>
         r.findings.filter((f) => f.severity === "critical").length;
       const escalations = countCritical(escalated) - countCritical(staticResult);
