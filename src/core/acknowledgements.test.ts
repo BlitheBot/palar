@@ -80,6 +80,7 @@ function liveResultWith(probe: LiveProbeResult): LiveAuditResult {
     timestamp: "2026-08-21T00:00:00.000Z",
     serverName: "desktop-commander",
     transportKind: "stdio",
+    payloadEligibility: { eligible: true, sandboxed: true, kind: "stdio" },
     outcome: "probed",
     unreachable: null,
     pid: 1,

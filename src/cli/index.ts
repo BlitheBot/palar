@@ -893,9 +893,16 @@ addLimitOptions(
             "inside an ephemeral, network-restricted Docker container (mounted read-only, " +
             "capabilities dropped, resource-limited) — Docker is required, with no unsandboxed " +
             "fallback. That is container isolation, not a VM or gVisor: a kernel-level " +
-            "container escape is not mitigated, and SSE targets (no local process to sandbox) " +
-            "are unaffected. See README.md's \"Live scanning\" section for the full list of " +
-            "what is and isn't covered.\n\n" +
+            "container escape is not mitigated. SSE targets are not one case but two, split " +
+            "on where they point, not on the fact that they are SSE:\n" +
+            "  - a target on a LOOPBACK host (127.0.0.0/8, ::1, localhost) is probed with real " +
+            "payloads against a real LOCAL process that is NOT sandboxed — the blast radius is " +
+            "your own machine, not a container;\n" +
+            "  - a target on any OTHER host is enumerated only — no payload is ever sent, " +
+            "because palar's oracle listener is loopback-scoped and such a probe could be " +
+            "neither contained nor confirmed.\n" +
+            "See README.md's \"Live scanning\" section for the full list of what is and isn't " +
+            "covered.\n\n" +
             "Re-run with --execute once you understand and accept that."
         )
       );
@@ -1005,6 +1012,21 @@ addLimitOptions(
               )
             ),
         });
+
+        // A notice, not an error: a remote SSE target was downgraded to
+        // enumerate-only and sent no payload. Surfaced during the run —
+        // not only buried in the report's Warnings section — because it
+        // changes what "live" did for this server.
+        if (!live.payloadEligibility.eligible) {
+          logStatus(chalk.yellow(`palar live: ${live.payloadEligibility.notice}`));
+        } else if (live.payloadEligibility.kind === "sse-loopback") {
+          logStatus(
+            chalk.yellow(
+              `palar live: "${server.name}" is a loopback SSE target — real payloads were sent ` +
+                "to an un-sandboxed local process (blast radius is this machine, not a container)."
+            )
+          );
+        }
 
         if (live.probes.some((p) => p.status === "confirmed")) anyConfirmed = true;
         liveResults.push(live);

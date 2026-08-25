@@ -66,14 +66,17 @@
  * are gated OFF here, with no opt-in flag: there is no version of that
  * call whose blast radius palar can bound.
  *
- * KNOWN INCOHERENCE, recorded rather than silently worked around: the
- * probe path itself does NOT make this distinction today. liveScan.ts's
- * probe loop has no transport branch, so an SSE target already receives
- * the full injection payload set over the network. Gating the benign
- * control while the payload still goes out is not a defensible line, and
- * it is deliberately not being presented as one. Changing probe behaviour
- * for SSE is a separate decision with a separate blast radius, and it is
- * not made here.
+ * The formerly-recorded incoherence — the probe loop sending the full
+ * injection set to SSE targets while this benign control was gated off — is
+ * now resolved, on a DIFFERENT axis than this gate uses. eligibility.ts
+ * splits SSE by loopback-vs-remote: a remote SSE target is enumerated only
+ * (no payload), and a loopback one is probed. This gate stays on the
+ * stdio-vs-sse line because it governs SANDBOXING, and a loopback SSE
+ * process is no more sandboxed than a remote one — so a benign control call
+ * to it is still a real, unbounded side effect and still withheld. Payloads
+ * reach a loopback SSE target because the operator pointed palar at their
+ * own machine and asked; an extra benign disambiguation call is not part of
+ * that ask and is not granted by it.
  *
  * ## The verb list, which is palar's own
  *

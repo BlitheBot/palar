@@ -652,10 +652,26 @@ export function renderLiveMarkdownReport(staticResult: AuditResult, live: LiveAu
         "a native Linux Engine or nftables-only host. See README.md's \"Live scanning\" " +
         "section for the full list of what is and isn't covered."
     );
+  } else if (live.payloadEligibility.kind === "sse-loopback") {
+    // The one case where a real payload reaches an UN-sandboxed process.
+    // The operator authorised it by pointing palar at their own machine,
+    // but the blast radius is not contained the way stdio's is, and they
+    // deserve to be told so in its own line rather than have it implied.
+    lines.push(
+      `- This SSE target is on a loopback host (${live.payloadEligibility.host}), so real ` +
+        "payloads WERE sent to it — but it runs as an ordinary local process with NO container " +
+        "around it. Unlike a stdio target, nothing bounds what a confirmed injection here can " +
+        "do: the blast radius is this machine, not an ephemeral sandbox. palar probes it " +
+        "because it is reachable by the oracle's loopback listener and you pointed palar at " +
+        "your own host on purpose."
+    );
   } else {
     lines.push(
-      "- SSE targets connect to an already-running remote server — there is no local process " +
-        "for palar to sandbox here."
+      "- This SSE target is remote, so it was ENUMERATED ONLY: its tools were listed and " +
+        "checked, but no payload was sent to any of them. palar's oracle listener is " +
+        "loopback-scoped, so a probe against a remote host could be neither contained (no " +
+        "sandbox around a remote process) nor confirmed (its callback would reach its own " +
+        "loopback, never palar's). To probe a server for real, run it on a loopback host."
     );
   }
   lines.push("");

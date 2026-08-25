@@ -7,6 +7,7 @@
 import type { MCPToolAnnotations } from "../core/types.js";
 import type { CallbackEvent } from "./oracle.js";
 import type { ProbeArgumentIssue, ProbeKind } from "./probes.js";
+import type { PayloadEligibility } from "./eligibility.js";
 
 /**
  * Outcome of a single probe. See status.ts for the strict resolution
@@ -158,6 +159,17 @@ export interface LiveAuditResult {
   timestamp: string;
   serverName: string;
   transportKind: "stdio" | "sse";
+  /**
+   * Whether this scan was allowed to send attack payloads, and — when it
+   * was not — why, in a sentence for the reader. The axis is
+   * loopback-vs-remote, not stdio-vs-sse: a stdio target and a loopback SSE
+   * target are both probed (the first inside a container, the second
+   * against a real local process with none), while an SSE target on any
+   * other host is enumerated only. See eligibility.ts. Carried on the
+   * result so `--json`, the report, and the exit path all read one decision
+   * rather than re-deriving it.
+   */
+  payloadEligibility: PayloadEligibility;
   outcome: LiveOutcome;
   /**
    * Why the target was never reached, in one sentence a reader can act on.

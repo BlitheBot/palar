@@ -62,6 +62,7 @@ function liveResult(probes: LiveProbeResult[]): LiveAuditResult {
     timestamp: "2026-08-18T00:00:00.000Z",
     serverName: "server-filesystem",
     transportKind: "stdio",
+    payloadEligibility: { eligible: true, sandboxed: true, kind: "stdio" },
     outcome: "probed",
     unreachable: null,
     sandboxSetupMs: 0,

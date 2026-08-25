@@ -8,8 +8,9 @@
  * stdio targets run inside a Docker container (sandbox.ts), not directly
  * on this host — Docker is mandatory here, with no unsandboxed fallback.
  * What that does and doesn't cover is documented in sandbox.ts and
- * README.md's "Live scanning" section. SSE targets have no local process
- * to sandbox and are unaffected.
+ * README.md's "Live scanning" section. SSE targets have no local process to
+ * sandbox; whether they are PROBED at all is a separate decision made on
+ * loopback-vs-remote grounds in eligibility.ts, not here.
  *
  * Two callers, deliberately sharing one connect path:
  *   - liveScan.ts (`palar live`) connects and then *probes* — it calls

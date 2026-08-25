@@ -69,6 +69,7 @@ function liveOf(probes: LiveProbeResult[]): LiveAuditResult {
     timestamp: "2026-08-19T00:00:00.000Z",
     serverName: "t",
     transportKind: "stdio",
+    payloadEligibility: { eligible: true, sandboxed: true, kind: "stdio" },
     outcome: "probed",
     unreachable: null,
     sandboxSetupMs: 0,

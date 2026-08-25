@@ -31,7 +31,26 @@ upgrading a CI gate.
   accepted, with a reason. Old configs are unaffected (`configVersion`
   stays `1`).
 
-### Added
+### Security
+
+- **`live --execute` no longer sends attack payloads to a remote SSE
+  target — it enumerates one instead.** Payload-eligibility is now decided
+  on a loopback-vs-remote axis, separate from the stdio-vs-sse sandboxing
+  axis: a stdio target (sandboxed) and an SSE target on a loopback host
+  (`127.0.0.0/8`, `::1`, `localhost`) are probed; an SSE target on any other
+  host is downgraded to enumerate-only, with a printed notice, and receives
+  no payload. Previously the probe loop had no transport branch, so a remote
+  SSE URL received the full command-injection and SSRF payload set over the
+  network, unsandboxed. The load-bearing reason this was a bug and not just
+  a hardening choice: the oracle callback listener is loopback-scoped, so a
+  remote target's `127.0.0.1` callback resolves to *its own* loopback and
+  can never reach palar — confirmation was **structurally impossible** for a
+  remote SSE target, meaning palar was sending payloads that could not
+  possibly confirm to a host the operator may not even own. **What changes
+  for you:** pointing `live --execute` at a non-loopback SSE URL now lists
+  its tools and stops, rather than attacking it. To probe a server for real,
+  run it on a loopback host; to enumerate a remote one on purpose, use
+  `scan --from-url`.
 
 - **Acknowledgements** — see README's "Accepting a finding you already know
   about". Keyed on `(ruleId, jsonPath)` with supersession aliasing and

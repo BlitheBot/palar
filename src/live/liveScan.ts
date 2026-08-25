@@ -27,9 +27,17 @@
  * two machines, etc.). Concurrent scans on this host are no longer a race:
  * the CLI serializes them behind an exclusive lock (live/lock.ts) taken
  * before any sandbox state exists and held for the whole run.
- * SSE targets have no local process to sandbox and are unaffected —
- * this module's safety posture for them is unchanged: a clean env is moot
- * (nothing is spawned) and only the overall timeout applies.
+ * SSE targets have no local process to sandbox, so the sandboxing above
+ * does not apply to them — but "no sandbox" is not the same as "unaffected",
+ * and whether a payload is sent at all is a SEPARATE axis, decided on
+ * loopback-vs-remote rather than stdio-vs-sse (see eligibility.ts):
+ *   - a loopback SSE target (127.0.0.0/8, ::1, localhost) IS probed with
+ *     real payloads, against a real local process with no container around
+ *     it — the blast radius is the operator's own machine, and report.ts
+ *     says so on its own line;
+ *   - a remote SSE target is enumerated only. No payload is sent, because
+ *     the oracle listener is loopback-scoped and such a probe could be
+ *     neither contained nor confirmed.
  */
 import { CallbackOracle } from "./oracle.js";
 import { resolveProbeStatus, wouldBeRejected } from "./status.js";
@@ -40,6 +48,7 @@ import {
 } from "./control.js";
 import { connectLive, type LiveConnection } from "./connector.js";
 import { TargetSandbox } from "./sandbox.js";
+import { classifyPayloadEligibility } from "./eligibility.js";
 import {
   classifyExecutionAdjacentFields,
   detectPoisonedDescription,
@@ -371,6 +380,15 @@ export async function runLiveScan(
 
   const isStdio = server.transport !== "sse";
 
+  // A SEPARATE axis from isStdio. isStdio decides sandboxing (below); this
+  // decides whether a payload may be sent at all, on the loopback-vs-remote
+  // line rather than the stdio-vs-sse one. stdio and loopback-SSE targets
+  // are probed; a remote SSE target is enumerated only, because palar's
+  // oracle listener is loopback-scoped and such a probe could be neither
+  // contained nor confirmed. See eligibility.ts, and the probe loop below
+  // which is the ONLY place this predicate gates behaviour.
+  const payloadEligibility = classifyPayloadEligibility(server);
+
   // A holder object, not bare `let`s: the setup below happens inside an
   // async closure past several `await`s, so TypeScript's control-flow
   // narrowing can't see that the assignments have happened by the time
@@ -386,6 +404,7 @@ export async function runLiveScan(
     timestamp: new Date().toISOString(),
     serverName: server.name,
     transportKind: isStdio ? "stdio" : "sse",
+    payloadEligibility,
     // Starts at never-reached and is earned, rather than starting at
     // "probed" and being downgraded on failure. Every way this function can
     // exit early — a throw, a timeout, a deadline that fires between two
@@ -572,13 +591,29 @@ export async function runLiveScan(
     }
     result.toolDrift = toolDrift;
 
+    // The downgrade notice, recorded once for the whole scan rather than
+    // per tool: a remote SSE target answered listTools() and got its tools,
+    // drift, and description-poisoning check like any other, but no payload
+    // was sent to any of them. This is a notice, not an error — the run
+    // succeeded at what it was allowed to do.
+    if (!payloadEligibility.eligible) {
+      warnings.push(payloadEligibility.notice);
+    }
+
     for (const tool of liveTools) {
-      const targets = classifyExecutionAdjacentFields(tool);
       const toolProbes: LiveProbeResult[] = [];
-      for (const target of targets) {
-        toolProbes.push(
-          await runOneProbe(connection, startedOracle, tool, target, callbackTimeoutMs)
-        );
+      // The ONE place payload-eligibility gates behaviour. When ineligible
+      // (a remote SSE target) no probe is built or sent — runOneProbe is the
+      // only thing in this loop that emits a payload. The poisoning check
+      // and control call below send nothing for any SSE target already
+      // (control.ts gates them off), so leaving them to run costs nothing
+      // and keeps the description-poisoning finding, which needs no call.
+      if (payloadEligibility.eligible) {
+        for (const target of classifyExecutionAdjacentFields(tool)) {
+          toolProbes.push(
+            await runOneProbe(connection, startedOracle, tool, target, callbackTimeoutMs)
+          );
+        }
       }
       result.probes.push(...toolProbes);
 
