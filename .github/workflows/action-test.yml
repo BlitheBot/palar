@@ -206,7 +206,7 @@ jobs:
           // and a NEW rule firing are four different events with four
           // different responses — the last of which is usually not a bug —
           // so each gets its own diagnostic instead of a single count.
-          const actual = [...md.matchAll(/^### \[([A-Z]+)\] ([A-Z]+-\d+):/gm)].map(
+          const actual = [...md.matchAll(/^### \[([A-Z]+)(?: · [A-Z]+)?\] ([A-Z]+-\d+):/gm)].map(
             (m) => [m[1], m[2]]
           );
           const actualSeverity = new Map(actual.map(([sev, id]) => [id, sev]));
