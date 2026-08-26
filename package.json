@@ -1,6 +1,6 @@
 {
   "name": "palar",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Defensive, read-only static analyzer for local MCP tool and server definition files",
   "type": "module",
   "bin": {

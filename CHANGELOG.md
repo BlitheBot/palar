@@ -6,9 +6,17 @@ This project is pre-1.0. Under `0.x`, minor releases may change behaviour;
 the "Behaviour changes" section of each entry is the part to read before
 upgrading a CI gate.
 
-## Unreleased
+## 0.4.0 — 2026-08-25
 
-### Behaviour changes
+Everything since 0.3.0 in one release: three feature lines — acknowledgements,
+benign control calls, and annotation-contradiction (TA-101) — alongside the
+recent bug fixes. It carries breaking changes; read the next section before
+upgrading a CI gate.
+
+### Breaking changes
+
+These change an existing `--json` shape or an exit-code contract. Everything
+else in this release is additive.
 
 - **BREAKING (report/JSON output): `exposedHosts` findings are now addressed
   by value, not by array index.** `servers["s"].network.exposedHosts[0]`
@@ -21,15 +29,30 @@ upgrading a CI gate.
   `tools[...]` — so no stored baseline breaks. Downstream tooling parsing
   `--json` for that literal path is the one thing that will notice.
 
-- **`Finding` gained `supersedes`.** `live/escalate.ts` rewrites a static
-  ruleId into the confirmed one (`IV-001` → `IV-101`) on the same field,
-  and that provenance was previously recoverable only from prose inside
-  `detail`. It is now structured, so anything matching findings across runs
-  can follow the chain.
+- **BREAKING (`scan --json`): a zero-tool scan no longer carries a grade.**
+  A scan that discovered definition files but examined zero tools now emits
+  `outcome: "no-tools-in-definitions"` with **no `score` field**, where it
+  used to emit `outcome: "examined"` with `score 100/100 (A)`. A CI reading
+  `.score.grade` gets `undefined` for these scans, not `"A"`. Full rationale
+  under Fixed below.
 
-- **New `.palarrc.json` key: `acknowledgements`.** Findings a project has
-  accepted, with a reason. Old configs are unaffected (`configVersion`
-  stays `1`).
+- **BREAKING (`palar live` exit code): a run in which no probe exercised its
+  field now exits `2`.** Previously that required every probe to be
+  `NOT TESTED`; an all-`inconclusive` run would have exited `0`. Detail in
+  the control-call entries below.
+
+### Additive but worth flagging
+
+- **New `.palarrc.json` key: `acknowledgements`** (and
+  `--strict-acknowledgements`). Findings a project has accepted, with a
+  reason. Old configs are unaffected (`configVersion` stays `1`) — additive,
+  listed here only so a CI owner knows the surface exists.
+
+- **`Finding` gained `supersedes`** (`--json`). `live/escalate.ts` rewrites a
+  static ruleId into the confirmed one (`IV-001` → `IV-101`) on the same
+  field, and that provenance was previously recoverable only from prose
+  inside `detail`. It is now structured, so anything matching findings across
+  runs can follow the chain — a new optional field, safe to ignore.
 
 ### Fixed
 
