@@ -59,7 +59,7 @@ import {
   type LiveTool,
   type FieldProbeTarget,
 } from "./probes.js";
-import { findProgramToken } from "./enumerate.js";
+import { findPlatformMismatches, findProgramToken } from "./enumerate.js";
 import { isConstrained } from "../rules/input-validation.js";
 import type { MCPServerConfig, MCPToolDefinition } from "../core/types.js";
 import type {
@@ -469,6 +469,46 @@ export async function runLiveScan(
           "(a Python module, a binary on your PATH, an npx/uvx package to be fetched) cannot " +
           "start there. Point the server's \"command\"/\"args\" at an installed entry point " +
           "beside the manifest, e.g. `node node_modules/@scope/server/dist/index.js`."
+      );
+    }
+
+    // Second pre-flight, same reasoning one layer down: the program exists,
+    // but a dependency it will load was installed for a platform the
+    // sandbox is not. Without this the container starts, the native binary
+    // refuses, and the target's own stack trace arrives under a NEVER
+    // REACHED headline that says nothing about whose problem it is. This
+    // one is the host's, and it has a one-line fix.
+    const mismatches = findPlatformMismatches(opts.targetDir);
+    if (mismatches.length > 0) {
+      const shown = mismatches.slice(0, 3);
+      const named = shown
+        .map((m) => {
+          const declared = [
+            m.os ? `os ${m.os.join(", ")}` : undefined,
+            m.cpu ? `cpu ${m.cpu.join(", ")}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(" / ");
+          return `\`${m.name}\` (declares ${declared})`;
+        })
+        .join(", ");
+      const more =
+        mismatches.length > shown.length
+          ? ` — and ${mismatches.length - shown.length} more`
+          : "";
+      return neverReached(
+        `Server "${server.name}" cannot start in the sandbox: its dependencies under ` +
+          `${opts.targetDir}/node_modules were installed for a different platform — ` +
+          `${named}${more}. palar's sandbox container is linux-${process.arch}. This is a ` +
+          "host-side " +
+          "install problem, not a defect in the server — a platform-native binary installed " +
+          "for another platform cannot execute in that container, so the target would die " +
+          "before the MCP handshake with that package's own platform error. Fix it by " +
+          "installing this target's dependencies on Linux, or from here with " +
+          `\`npm install --os=linux --cpu=${process.arch} --ignore-scripts\` in that directory ` +
+          "(`--ignore-scripts` because the package's postinstall validates the binary " +
+          "against the host it runs on, which is not the host it is for). palar never " +
+          "reached this target and learned nothing about it."
       );
     }
   }

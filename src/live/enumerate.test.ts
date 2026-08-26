@@ -18,6 +18,7 @@ import {
   describeSource,
   enumerateFromCommand,
   EnumerationPlanError,
+  findPlatformMismatches,
   planContainerCommand,
   toToolDefinitions,
   type EnumerationResult,
@@ -319,4 +320,160 @@ test("absent optional fields are omitted, not filled in", () => {
 test("non-object annotations are dropped rather than carried as garbage", () => {
   const [tool] = toToolDefinitions([{ name: "t", annotations: "read-only" }]);
   assert.ok(!("annotations" in tool!));
+});
+
+
+// ---------------------------------------------------------------------------
+// findPlatformMismatches
+//
+// The whole risk in this check is over-firing. A miss leaves today's
+// behaviour (the target's own error); a false positive refuses to scan a
+// server that would have worked, and tells the user to "fix" an install that
+// is already correct. Every negative case below is therefore load-bearing,
+// and there are deliberately more of them than positive ones.
+// ---------------------------------------------------------------------------
+
+/** Writes a package into `<root>/node_modules/<name>` with the given manifest. */
+async function installed(
+  root: string,
+  name: string,
+  manifest: Record<string, unknown>
+): Promise<void> {
+  const dir = join(root, "node_modules", ...name.split("/"));
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    join(dir, "package.json"),
+    JSON.stringify({ name, version: "1.0.0", ...manifest })
+  );
+}
+
+async function targetRoot(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "palar-platform-"));
+}
+
+// The sandbox container runs linux on the host's own architecture (see
+// SANDBOX_CPU). These tests must assert that, not a hardcoded x64, or they
+// would pass on CI and fail on an Apple Silicon laptop.
+const NATIVE = process.arch;
+const FOREIGN = process.arch === "arm64" ? "x64" : "arm64";
+
+test("a Windows-only package with no Linux sibling is reported", async () => {
+  const root = await targetRoot();
+  try {
+    await installed(root, "@esbuild/win32-x64", { os: ["win32"], cpu: [NATIVE] });
+    const found = findPlatformMismatches(root);
+    assert.equal(found.length, 1);
+    assert.equal(found[0]!.name, "@esbuild/win32-x64");
+    assert.deepEqual(found[0]!.os, ["win32"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a package installed FOR linux-x64 stays silent", async () => {
+  // The documented `--os=linux --cpu=x64` workaround. This install is
+  // correct and the target will start; firing here would be the single
+  // worst outcome for this check.
+  const root = await targetRoot();
+  try {
+    await installed(root, "@esbuild/linux-native", { os: ["linux"], cpu: [NATIVE] });
+    assert.deepEqual(findPlatformMismatches(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("both platforms installed side by side stays silent", async () => {
+  // yarn's supportedArchitectures, or `npm install --force`. The binary the
+  // container needs is present, so the target runs.
+  const root = await targetRoot();
+  try {
+    await installed(root, "@esbuild/win32-x64", { os: ["win32"], cpu: [NATIVE] });
+    await installed(root, "@esbuild/linux-native", { os: ["linux"], cpu: [NATIVE] });
+    assert.deepEqual(findPlatformMismatches(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("one broken scope is reported even when another scope is fine", async () => {
+  const root = await targetRoot();
+  try {
+    await installed(root, "@esbuild/linux-native", { os: ["linux"], cpu: [NATIVE] });
+    await installed(root, "@rollup/rollup-win32-x64-msvc", {
+      os: ["win32"],
+      cpu: [NATIVE],
+    });
+    const found = findPlatformMismatches(root);
+    assert.equal(found.length, 1);
+    assert.equal(found[0]!.name, "@rollup/rollup-win32-x64-msvc");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("packages declaring no os/cpu are never reported", async () => {
+  const root = await targetRoot();
+  try {
+    await installed(root, "zod", {});
+    await installed(root, "@modelcontextprotocol/sdk", {});
+    assert.deepEqual(findPlatformMismatches(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("npm's negation and 'any' forms are honoured, not guessed at", async () => {
+  const root = await targetRoot();
+  try {
+    // `!win32` permits linux. `any` permits everything. Treating either as
+    // an allowlist would refuse a target that runs perfectly well.
+    await installed(root, "not-windows", { os: ["!win32"] });
+    await installed(root, "anywhere", { os: ["any"], cpu: ["any"] });
+    await installed(root, "string-form", { os: "linux" });
+    assert.deepEqual(findPlatformMismatches(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a denied linux, or a foreign cpu, is reported", async () => {
+  const root = await targetRoot();
+  try {
+    await installed(root, "no-linux", { os: ["!linux"] });
+    await installed(root, "foreign-cpu-only", { cpu: [FOREIGN] });
+    const names = findPlatformMismatches(root)
+      .map((m) => m.name)
+      .sort();
+    assert.deepEqual(names, ["foreign-cpu-only", "no-linux"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a missing or unreadable node_modules is not a mismatch", async () => {
+  const root = await targetRoot();
+  try {
+    assert.deepEqual(findPlatformMismatches(root), []);
+    await mkdir(join(root, "node_modules", "broken"), { recursive: true });
+    await writeFile(join(root, "node_modules", "broken", "package.json"), "{ not json");
+    assert.deepEqual(findPlatformMismatches(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an unscoped package is judged only against itself", async () => {
+  // Grouping is by scope; two unrelated unscoped packages must not cover
+  // for each other the way two members of one scope do.
+  const root = await targetRoot();
+  try {
+    await installed(root, "linux-thing", { os: ["linux"] });
+    await installed(root, "windows-thing", { os: ["win32"] });
+    const found = findPlatformMismatches(root);
+    assert.equal(found.length, 1);
+    assert.equal(found[0]!.name, "windows-thing");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

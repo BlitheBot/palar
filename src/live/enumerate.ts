@@ -30,7 +30,7 @@
  *     provides a Node runtime and a read-only mount of your disk, and
  *     nothing else.
  */
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { isAbsolute, parse as parsePath, relative, resolve, sep } from "node:path";
 import type { MCPServerConfig, MCPToolDefinition } from "../core/types.js";
 import { connectLive, type LiveConnection } from "./connector.js";
@@ -203,6 +203,170 @@ export function findProgramToken(tokens: string[], cwd: string): string | undefi
     }
   };
   return tokens.find(isExistingFile);
+}
+
+/**
+ * The platform palar's sandbox container actually runs as.
+ *
+ * The OS is certain: both images in docker/ are Linux bases, and Docker
+ * Desktop runs Linux containers on macOS and Windows too.
+ *
+ * The CPU is the host's own, because neither image pins `--platform` and
+ * Docker therefore builds and runs them natively. On an Apple Silicon host
+ * the container is linux/arm64, not linux/x64, and hardcoding x64 here
+ * would report a correct `@esbuild/linux-arm64` install as broken — the
+ * exact false positive this check must not produce. Node's `process.arch`
+ * uses the same vocabulary as npm's `cpu` field, so it needs no
+ * translation. An explicitly emulated `--platform` setup is not modelled;
+ * that fails toward silence, not toward a wrong accusation.
+ */
+const SANDBOX_OS = "linux";
+const SANDBOX_CPU = process.arch;
+
+/** One installed package that cannot execute inside the sandbox. */
+export interface PlatformMismatch {
+  /** The package's own declared name, e.g. `@esbuild/win32-x64`. */
+  name: string;
+  /** Its declared `os`, verbatim, or undefined when it constrains only cpu. */
+  os?: string[];
+  /** Its declared `cpu`, verbatim, or undefined when it constrains only os. */
+  cpu?: string[];
+}
+
+/**
+ * npm's own `os`/`cpu` matching rule, reproduced rather than approximated.
+ *
+ * A bare list is an allowlist; a `!`-prefixed entry is a denylist; `any`
+ * matches everything. A value fails if it matches any negated entry, and
+ * otherwise passes if it matches a positive entry OR if every entry was
+ * negated. Getting this wrong in the lenient direction misses a broken
+ * install; getting it wrong in the strict direction refuses to scan a
+ * target that would have worked, which is worse.
+ */
+function satisfies(field: unknown, value: string): boolean {
+  const list = typeof field === "string" ? [field] : field;
+  if (!Array.isArray(list) || list.length === 0) return true;
+  if (list.length === 1 && list[0] === "any") return true;
+
+  let negated = 0;
+  let matched = false;
+  for (const entry of list) {
+    if (typeof entry !== "string") continue;
+    if (entry.startsWith("!")) {
+      negated++;
+      if (entry.slice(1) === value) return false;
+    } else if (entry === value) {
+      matched = true;
+    }
+  }
+  return matched || negated === list.length;
+}
+
+/**
+ * Installed packages under `targetDir` that declare a platform the sandbox
+ * container is not, and so cannot run in it.
+ *
+ * THE FAILURE THIS PREVENTS. A Node MCP server with a native dependency --
+ * esbuild, rollup, swc, lightningcss, sharp -- ships a platform-specific
+ * binary chosen at install time. `npm install` on a Windows or macOS host
+ * writes @esbuild/win32-x64 (or darwin-*) into the target's node_modules;
+ * palar bind-mounts that directory into a linux-x64 container; the binary
+ * refuses to run. The target dies before the MCP handshake, and what the
+ * user sees is the target's own stack trace under a `NEVER REACHED`
+ * headline -- nothing saying this is a host-side install they can fix in
+ * thirty seconds rather than a broken server.
+ *
+ * WHY MANIFESTS AND NOT DIRECTORY NAMES. `os`/`cpu` in a package's own
+ * package.json is npm's actual contract for this, so it catches every
+ * package that declares one, including those that do not follow the
+ * `name-platform` naming convention. Matching directory names would be a
+ * guess dressed up as a check.
+ *
+ * WHY IT DOES NOT FIRE ON A WORKING INSTALL. Mismatches are grouped by
+ * scope, and a scope is only reported when EVERY platform-declaring package
+ * in it mismatches. A tree holding @esbuild/linux-x64 is silent -- that is
+ * the documented `--os=linux --cpu=x64` workaround, and it works. A tree
+ * holding both (yarn's supportedArchitectures, or `npm install --force`)
+ * is also silent, because the one the container needs is present. Only a
+ * scope with no runnable candidate at all is a real, certain failure.
+ *
+ * SCOPE OF THE SEARCH. Top level plus one level of scope directories --
+ * where npm hoists these packages. A non-hoisted copy nested deeper is not
+ * found, which fails toward silence: the caller gets today's behaviour, the
+ * target's own error, rather than a wrong accusation.
+ */
+export function findPlatformMismatches(targetDir: string): PlatformMismatch[] {
+  const nodeModules = resolve(targetDir, "node_modules");
+  if (!existsSync(nodeModules)) return [];
+
+  const read = (dir: string): PlatformMismatch | "ok" | undefined => {
+    let manifest: { name?: unknown; os?: unknown; cpu?: unknown };
+    try {
+      manifest = JSON.parse(readFileSync(resolve(dir, "package.json"), "utf8"));
+    } catch {
+      // Unreadable or not a package: nothing is declared, so nothing is
+      // known to be wrong. Never a mismatch on absence of evidence.
+      return undefined;
+    }
+    if (manifest.os === undefined && manifest.cpu === undefined) return undefined;
+    if (satisfies(manifest.os, SANDBOX_OS) && satisfies(manifest.cpu, SANDBOX_CPU)) {
+      return "ok";
+    }
+    return {
+      name: typeof manifest.name === "string" ? manifest.name : dir,
+      os: Array.isArray(manifest.os) ? (manifest.os as string[]) : undefined,
+      cpu: Array.isArray(manifest.cpu) ? (manifest.cpu as string[]) : undefined,
+    };
+  };
+
+  // Group key is the scope (`@esbuild`), or the package's own directory name
+  // when it is unscoped -- so an unscoped package is only ever judged
+  // against itself.
+  const runnable = new Set<string>();
+  const broken = new Map<string, PlatformMismatch[]>();
+
+  const consider = (group: string, dir: string): void => {
+    const verdict = read(dir);
+    if (verdict === undefined) return;
+    if (verdict === "ok") {
+      runnable.add(group);
+      return;
+    }
+    const existing = broken.get(group);
+    if (existing) existing.push(verdict);
+    else broken.set(group, [verdict]);
+  };
+
+  let entries;
+  try {
+    entries = readdirSync(nodeModules, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === ".bin") continue;
+    const path = resolve(nodeModules, entry.name);
+    if (!entry.name.startsWith("@")) {
+      consider(entry.name, path);
+      continue;
+    }
+    let scoped;
+    try {
+      scoped = readdirSync(path, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const child of scoped) {
+      if (child.isDirectory()) consider(entry.name, resolve(path, child.name));
+    }
+  }
+
+  const out: PlatformMismatch[] = [];
+  for (const [group, mismatches] of broken) {
+    if (runnable.has(group)) continue;
+    out.push(...mismatches);
+  }
+  return out;
 }
 
 /**

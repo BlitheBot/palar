@@ -722,6 +722,57 @@ Named gaps, not silently deferred:
   an already-running remote server; the callback-oracle scope limitation
   below still applies to both.
 
+### The target's dependencies must be installed for Linux
+
+The sandbox bind-mounts the target's directory read-only at `/target` and
+the runtime image is a bare `node:20-slim` — every dependency the target
+loads comes from the `node_modules` **you** installed on **your** host.
+
+That is a problem for any Node MCP server with a native dependency.
+`esbuild`, `rollup`, `swc`, `lightningcss`, and `sharp` all ship a
+platform-specific binary chosen at install time, so an `npm install` on a
+Windows or macOS host writes (say) `@esbuild/win32-x64` into that directory.
+The container is Linux, the binary refuses to run, and the target dies
+before the MCP handshake.
+
+`palar live` detects this at pre-flight and refuses, naming the package and
+both platforms, before any container is started:
+
+```
+Server "my-server" cannot start in the sandbox: its dependencies under
+/path/to/server/node_modules were installed for a different platform —
+`@esbuild/win32-x64` (declares os win32 / cpu x64). palar's sandbox
+container is linux-x64. This is a host-side install problem, not a defect
+in the server […]
+```
+
+The fix is to install the target's dependencies for the container:
+
+```bash
+cd /path/to/server
+npm install --os=linux --cpu=x64 --ignore-scripts
+```
+
+`--ignore-scripts` is needed because the package's own postinstall
+validates the binary against the host it is running on, which is not the
+host it is for.
+
+Known bounds of the check, all of which fail toward silence rather than a
+wrong accusation:
+
+- it reads each installed package's own `os`/`cpu` fields — npm's actual
+  contract — and only fires when **no** package in a scope can run in the
+  container, so a correct `--os=linux` install, or a tree carrying both
+  platforms, stays silent;
+- it looks at the top level of `node_modules` plus one level of scope
+  directories, where npm hoists these packages. A non-hoisted copy nested
+  deeper is not found, and you get the target's own error as before;
+- the container's architecture is taken to be the host's, since neither
+  image pins `--platform`. An explicitly emulated setup is not modelled;
+- **`scan --from-command` does not yet run this check** — it mounts the
+  same way and has the same failure, but currently surfaces the target's
+  own error rather than this one.
+
 ### What the oracle proves, and what it doesn't
 
 - The oracle is a **local HTTP listener**, not external DNS/HTTP
