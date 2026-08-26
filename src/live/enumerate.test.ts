@@ -14,6 +14,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
+  classifyRuntime,
   describeSource,
   enumerateFromCommand,
   EnumerationPlanError,
@@ -113,13 +114,13 @@ test("rewrites only paths inside the mount; flags and container paths pass throu
   }
 });
 
-test("refuses a registry-fetch invocation instead of failing later as a timeout", () => {
-  // The named limitation, enforced in code rather than only in --help:
-  // npx/uvx name a package to fetch, and the sandbox has no network.
+test("npx of an uninstalled package is refused with the network/registry reason", () => {
+  // npx IS Node, so it passes the runtime gate — but the package it names
+  // is not on disk, and the sandbox has no network to fetch it. That is the
+  // registry-fetch refusal, not a runtime one.
   for (const argv of [
     ["npx", "-y", "@scope/some-server"],
-    ["uvx", "mcp-server-fetch"],
-    ["python", "-m", "mcp_server_fetch"],
+    ["npx", "mcp-server-fetch"],
   ]) {
     assert.throws(
       () => planContainerCommand(argv[0]!, argv.slice(1), tmpdir()),
@@ -131,6 +132,65 @@ test("refuses a registry-fetch invocation instead of failing later as a timeout"
       `expected \`${argv.join(" ")}\` to be refused at plan time`
     );
   }
+});
+
+test("an unsupported runtime is refused at plan time, named, before any file lookup", () => {
+  // These name a non-Node runtime the sandbox image does not have. The
+  // refusal must NAME the runtime and point at --from-url — and it must not
+  // depend on whether a file exists (the `python <existing.py>` case is
+  // exactly the one that used to start a container and hang).
+  const cases: [string[], RegExp][] = [
+    [["python", "-m", "mcp_server_fetch"], /Python MCP servers aren't supported/],
+    [["python", "/etc/hostname"], /Python MCP servers aren't supported/], // file exists, still refused on runtime
+    [["uvx", "mcp-server-git"], /Python \(uvx\) MCP servers aren't supported/],
+    [["uv", "run", "server"], /Python \(uv\) MCP servers aren't supported/],
+    [["go", "run", "./main.go"], /Go MCP servers aren't supported/],
+    [["deno", "run", "server.ts"], /Deno MCP servers aren't supported/],
+  ];
+  for (const [argv, pattern] of cases) {
+    assert.throws(
+      () => planContainerCommand(argv[0]!, argv.slice(1), tmpdir()),
+      (err: unknown) => {
+        assert.ok(err instanceof EnumerationPlanError);
+        assert.match((err as Error).message, pattern);
+        assert.match((err as Error).message, /Node-only/);
+        assert.match((err as Error).message, /scan --from-url/);
+        return true;
+      },
+      `expected \`${argv.join(" ")}\` to be refused by runtime at plan time`
+    );
+  }
+});
+
+test("a non-Node binary path and an unrecognised bare name both refuse, failing toward refusal", () => {
+  assert.throws(
+    () => planContainerCommand("/usr/local/bin/mcp-server", [], tmpdir()),
+    (err: unknown) =>
+      err instanceof EnumerationPlanError && /non-Node binary or script/.test((err as Error).message),
+    "a bare binary path must refuse"
+  );
+  assert.throws(
+    () => planContainerCommand("mcp-server", ["stdio"], tmpdir()),
+    (err: unknown) =>
+      err instanceof EnumerationPlanError && /could not recognise the runtime/.test((err as Error).message),
+    "an unrecognised bare name must refuse rather than assume Node"
+  );
+});
+
+test("classifyRuntime: node/npx supported, interpreters/binaries not, Node scripts ok", () => {
+  assert.deepEqual(classifyRuntime("node"), { kind: "node" });
+  assert.deepEqual(classifyRuntime("nodejs"), { kind: "node" });
+  assert.deepEqual(classifyRuntime("npx"), { kind: "node" });
+  assert.deepEqual(classifyRuntime("C:\\Program Files\\nodejs\\node.exe"), { kind: "node" });
+  assert.deepEqual(classifyRuntime("./server.mjs"), { kind: "node" });
+  assert.deepEqual(classifyRuntime("dist/index.cjs"), { kind: "node" });
+  assert.equal(classifyRuntime("python").kind, "unsupported-runtime");
+  assert.equal(classifyRuntime("python3").kind, "unsupported-runtime");
+  assert.equal(classifyRuntime("uvx").kind, "unsupported-runtime");
+  assert.equal(classifyRuntime("go").kind, "unsupported-runtime");
+  assert.equal(classifyRuntime("/opt/bin/thing").kind, "unsupported-binary");
+  assert.equal(classifyRuntime("./server.py").kind, "unsupported-binary");
+  assert.equal(classifyRuntime("mcp-server").kind, "unrecognised");
 });
 
 test("describeSource never looks like a path a reader could open", () => {

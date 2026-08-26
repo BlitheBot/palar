@@ -334,7 +334,10 @@ function renderFinding(finding: Finding): string {
   return lines.join("\n");
 }
 
-export function renderMarkdownReport(result: AuditResult): string {
+export function renderMarkdownReport(
+  result: AuditResult,
+  opts: { unscored?: boolean } = {}
+): string {
   const lines: string[] = [];
 
   lines.push("# palar audit report");
@@ -342,7 +345,13 @@ export function renderMarkdownReport(result: AuditResult): string {
   lines.push(`- **Timestamp:** ${result.timestamp}`);
   lines.push(`- **Tools scanned:** ${result.toolsScanned}`);
   lines.push(`- **Servers scanned:** ${result.serversScanned}`);
-  lines.push(`- **Score:** ${result.score.value}/100 (grade ${result.score.grade})`);
+  // `unscored` withholds the grade rather than printing a 100/A for a scan
+  // that examined zero tools — see the CLI's no-tools-in-definitions branch.
+  lines.push(
+    opts.unscored
+      ? "- **Score:** none — 0 tools examined, so no grade is emitted (a grade would describe a surface palar never saw)"
+      : `- **Score:** ${result.score.value}/100 (grade ${result.score.grade})`
+  );
   lines.push("");
 
   lines.push("## Findings by severity");

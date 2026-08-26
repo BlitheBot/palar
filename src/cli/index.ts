@@ -491,6 +491,20 @@ function reportScore(
     )
   );
 
+  gateOnFailOn(result, opts, logStatus);
+}
+
+/**
+ * Applies `--fail-on`: exits 1 if any non-accepted finding is at or above
+ * the threshold. Split out of reportScore so the no-tools-in-definitions
+ * path can still let a server-side finding fail the build without printing
+ * a grade it deliberately withholds.
+ */
+function gateOnFailOn(
+  result: AuditResult,
+  opts: ScanOpts,
+  logStatus: (message: string) => void
+): void {
   if (opts.failOn) {
     // Accepted findings are excluded HERE and nowhere else. This is the
     // single point at which an acknowledgement has any effect: the score
@@ -689,6 +703,40 @@ addLimitOptions(
 
       const audited = runAudit(discovered, config);
       const result = applyAcks(audited, config, opts, logStatus, false);
+
+      // The false-clean guard. palar grades the TOOL surface; a scan that
+      // examined zero tools graded nothing, so it must not publish a passing
+      // 100/A — the same rule the live no-tools path (enumerate.ts) applies,
+      // here for a static scan. This is where a server whose definition was
+      // read but whose tools were never seen (a server-only file, a server
+      // that never started) stops being a clean bill of health. Server-side
+      // findings still print and still gate --fail-on; only the grade is
+      // withheld. Distinct from nothing-discovered above (no files at all).
+      if (result.toolsScanned === 0) {
+        const doc: ScanJsonDocument = {
+          outcome: "no-tools-in-definitions",
+          timestamp: result.timestamp,
+          toolsScanned: result.toolsScanned,
+          serversScanned: result.serversScanned,
+          findings: result.findings,
+          warnings: result.warnings,
+        };
+        await emitScanOutput(
+          opts.json ? JSON.stringify(doc, null, 2) : renderMarkdownReport(result, { unscored: true }),
+          opts,
+          logStatus
+        );
+        logStatus(
+          chalk.yellow(
+            `no grade: examined ${result.serversScanned} server definition(s) and 0 tool(s) — ` +
+              "palar grades the tool surface, which is empty here, so no score is emitted (a grade " +
+              `would describe a surface palar never saw). ${result.findings.length} finding(s) reported.`
+          )
+        );
+        gateOnFailOn(result, opts, logStatus);
+        return;
+      }
+
       const doc: ScanJsonDocument = { outcome: "examined", ...result };
 
       await emitScanOutput(
@@ -1227,9 +1275,98 @@ addLimitOptions(
   }
 );
 
-try {
-  await program.parseAsync();
-} catch (err) {
-  console.error(chalk.red(`palar: ${(err as Error).message}`));
-  process.exitCode = 1;
+/** Every flag string (short and long) the `scan` command recognises. */
+function knownScanFlags(): Set<string> {
+  const scan = program.commands.find((c) => c.name() === "scan");
+  const set = new Set<string>();
+  for (const opt of scan?.options ?? []) {
+    if (opt.short) set.add(opt.short);
+    if (opt.long) set.add(opt.long);
+  }
+  return set;
+}
+
+/**
+ * Pre-parse refusal for a `scan --from-command` whose command carries an
+ * interpreter flag palar cannot recognise — run BEFORE commander, because
+ * commander's variadic `--from-command <command...>` stops at the first
+ * token starting with `-` and then rejects that token as an unknown palar
+ * option. So the two most common non-Node invocations, `python -m <module>`
+ * and `npx -y <pkg>`, die with a bare `error: unknown option '-m'` (exit 1)
+ * that names neither the real limitation nor a way forward — never reaching
+ * the honest refusal planContainerCommand already throws (and both
+ * enumerate.test.ts and scan-outcomes.test.ts already pin).
+ *
+ * The trigger is deliberately narrow: it fires ONLY when the command tokens
+ * (up to a bare `--`) contain a `-`flag that is not one of palar's own scan
+ * options. That is the single shape commander aborts on before the action
+ * runs; every other shape — a command with no internal flag, a conflict with
+ * paths/--dir/--from-url, a bad --from-env, `--`-passthrough — already
+ * reaches the scan action, which does its own validation and must not be
+ * pre-empted. And even when it fires, it only REFUSES if planContainerCommand
+ * would: a command whose tokens name a real on-disk program is deferred to
+ * normal parsing. So no working invocation changes; the sole difference is
+ * that a doomed `python -m`/`npx -y` gets the clean never-reached refusal
+ * (exit 2) instead of commander's opaque "unknown option".
+ */
+async function refuseUnrunnableFromCommand(argv: string[]): Promise<boolean> {
+  if (argv[2] !== "scan") return false;
+  const flag = argv.indexOf("--from-command");
+  if (flag < 0) return false;
+  const sep = argv.indexOf("--", flag + 1);
+  const tokens = argv.slice(flag + 1, sep < 0 ? undefined : sep);
+  if (tokens.length === 0) return false; // let commander report the missing arg
+
+  const known = knownScanFlags();
+  const isFlag = (t: string): boolean => t.startsWith("-") && t !== "-";
+  const isKnownPalarFlag = (t: string): boolean => known.has(t.split("=")[0]!);
+
+  // Walk the command tokens; stop at the first of palar's OWN trailing
+  // options. A `-`flag in that run palar does not recognise is exactly what
+  // commander would abort on.
+  const cmdTokens: string[] = [];
+  let sawUnknownFlag = false;
+  for (const t of tokens) {
+    if (isFlag(t) && isKnownPalarFlag(t)) break;
+    if (isFlag(t)) sawUnknownFlag = true;
+    cmdTokens.push(t);
+  }
+  if (!sawUnknownFlag) return false; // commander parses it fine — don't pre-empt
+
+  try {
+    planContainerCommand(cmdTokens[0]!, cmdTokens.slice(1));
+    return false; // a real program was found — defer to normal parsing
+  } catch (err) {
+    if (!(err instanceof EnumerationPlanError)) throw err;
+    // Reuse the exact never-reached reporting path so the output is
+    // byte-identical to the invocations that reach the action (e.g. a bare
+    // `uvx <pkg>`), honouring --json/--out peeked from argv.
+    const outIdx = argv.indexOf("--out");
+    const opts = {
+      json: argv.includes("--json"),
+      out: outIdx >= 0 ? argv[outIdx + 1] : undefined,
+    } as ScanOpts;
+    await reportUnexaminable(
+      {
+        outcome: "never-reached",
+        source: { kind: "command", command: cmdTokens[0]!, args: cmdTokens.slice(1) },
+        error: (err as Error).message,
+        durationMs: 0,
+      },
+      opts,
+      opts.json ? console.error : console.log
+    );
+    return true;
+  }
+}
+
+if (await refuseUnrunnableFromCommand(process.argv)) {
+  // process.exitCode was set to 2 by reportUnexaminable; nothing else runs.
+} else {
+  try {
+    await program.parseAsync();
+  } catch (err) {
+    console.error(chalk.red(`palar: ${(err as Error).message}`));
+    process.exitCode = 1;
+  }
 }

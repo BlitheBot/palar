@@ -31,6 +31,39 @@ upgrading a CI gate.
   accepted, with a reason. Old configs are unaffected (`configVersion`
   stays `1`).
 
+### Fixed
+
+- **`scan --from-command` refuses a non-Node runtime at plan time instead
+  of starting a container that hangs.** The scan sandbox image is Node-only,
+  but there was no runtime check: `python -m ...`, `uvx`, `go run`, a
+  compiled binary, or an unrecognised argv[0] were planned and started, then
+  failed inside the container minutes later as an opaque connect timeout (or,
+  for a non-Node file that happened to exist, a hang). argv[0] is now
+  classified BEFORE the lock is taken or a container starts (proven: no lock
+  file is written and no `docker run` is issued) — `node`/`npx` and
+  `.mjs`/`.cjs` scripts are supported; anything else is refused with an
+  exit-2 never-reached message that NAMES the runtime ("Python MCP servers
+  aren't supported by `--from-command` yet — the scan sandbox is Node-only")
+  and points at `scan --from-url` for an already-running server.
+  Classification fails toward refusal: an argv[0] it cannot positively
+  recognise as Node is refused as "unrecognised runtime", never assumed.
+  `npx` of an uninstalled package stays Node and is still refused with the
+  real network/registry reason (the sandbox has no DNS to fetch it).
+
+- **`scan` no longer reports a target that failed to start as clean.** A
+  scan that discovered definition files but examined ZERO tools — a
+  server-only definition, or a server whose runtime failed to start — used
+  to emit `outcome: "examined"` with `score 100/100 (A)`, exit 0: a clean
+  bill of health for a surface palar never saw. Such a scan now emits
+  `outcome: "no-tools-in-definitions"` with **no `score` field** (server-side
+  findings, if any, are still listed and still gate `--fail-on`), the same
+  never-reached-style rule the live enumerate path already applied to a
+  running server that answers with zero tools. "0 tools because it didn't
+  start" and "0 tools because it's empty" are now distinguishable, and
+  neither is 100/A. **Downstream impact:** CI reading `.score.grade` from
+  `--json` gets `undefined` instead of `"A"` for these scans; a scan with
+  tools is unaffected.
+
 ### Security
 
 - **`live --execute` no longer sends attack payloads to a remote SSE

@@ -320,5 +320,22 @@ export type ScanJsonDocument =
     }
   /** A live source answered the handshake and reported zero tools. */
   | { outcome: "no-tools"; timestamp: string; source: string }
+  /**
+   * Definition files WERE discovered on disk, but they declare zero tools —
+   * the tool surface palar grades was empty, so no score is emitted. A
+   * server that fails to start, or a server definition with no tools file,
+   * lands here rather than being scored 100/A. Server-side findings (network
+   * posture, manifest credentials) are still listed and still gate
+   * --fail-on. Distinct from nothing-discovered (no definition files at all)
+   * and from the live no-tools (a running server that answered with none).
+   */
+  | {
+      outcome: "no-tools-in-definitions";
+      timestamp: string;
+      toolsScanned: number;
+      serversScanned: number;
+      findings: Finding[];
+      warnings: string[];
+    }
   /** A live source was never reached at all, so nothing is known about it. */
   | { outcome: "never-reached"; timestamp: string; source: string; error: string };

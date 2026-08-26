@@ -205,11 +205,116 @@ export function findProgramToken(tokens: string[], cwd: string): string | undefi
   return tokens.find(isExistingFile);
 }
 
+/**
+ * What runtime a `--from-command` argv[0] names, judged BEFORE any file is
+ * touched. The scan sandbox image is Node-only, so this is the check that
+ * turns "a container that starts and then hangs or dies opaquely" into "a
+ * plan-time refusal that names the runtime."
+ *
+ * It is deliberately conservative in the unsupported direction: anything it
+ * cannot positively recognise as Node is refused, not assumed. A false
+ * refusal costs one clear error message; a false accept costs a container
+ * that starts a runtime the image does not have and reports as a connect
+ * timeout minutes later. Fail toward refusal.
+ */
+export type RuntimeClass =
+  | { kind: "node" }
+  | { kind: "unsupported-runtime"; runtime: string }
+  | { kind: "unsupported-binary" }
+  | { kind: "unrecognised" };
+
+/** argv[0] basenames that ARE the Node runtime (or bundled with it). */
+const SUPPORTED_BASENAMES = new Set(["node", "nodejs", "npx"]);
+
+/** A Node script invoked directly (shebang / entrypoint runs it under node). */
+const NODE_SCRIPT_EXT = /\.(m?js|cjs)$/i;
+
+/** Non-Node launchers we can name, mapped to the runtime shown to the user. */
+const UNSUPPORTED_RUNTIMES: Record<string, string> = {
+  python: "Python",
+  python3: "Python",
+  python2: "Python",
+  py: "Python",
+  pypy: "Python",
+  uv: "Python (uv)",
+  uvx: "Python (uvx)",
+  pipx: "Python (pipx)",
+  pip: "Python (pip)",
+  pip3: "Python (pip)",
+  deno: "Deno",
+  bun: "Bun",
+  bunx: "Bun",
+  go: "Go",
+  cargo: "Rust",
+  rustc: "Rust",
+  ruby: "Ruby",
+  bundle: "Ruby",
+  gem: "Ruby",
+  php: "PHP",
+  perl: "Perl",
+  java: "Java",
+  dotnet: ".NET",
+  mono: ".NET",
+};
+
+/** argv[0] with any directory and a trailing `.exe`/`.cmd`/`.bat` removed. */
+function commandBasename(command: string): string {
+  const seg = command.replace(/\\/g, "/").split("/").pop() ?? command;
+  return seg.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+}
+
+export function classifyRuntime(command: string): RuntimeClass {
+  const base = commandBasename(command);
+  if (SUPPORTED_BASENAMES.has(base)) return { kind: "node" };
+  const named = UNSUPPORTED_RUNTIMES[base];
+  if (named) return { kind: "unsupported-runtime", runtime: named };
+  // A Node script named directly (`./server.mjs`) is still Node.
+  if (NODE_SCRIPT_EXT.test(command)) return { kind: "node" };
+  // A path or a name with any other extension is a non-Node file/binary.
+  const looksLikeFile = /[\\/]/.test(command) || /\.[^./\\]+$/.test(command);
+  if (looksLikeFile) return { kind: "unsupported-binary" };
+  // A bare name we do not recognise: refuse rather than guess Node.
+  return { kind: "unrecognised" };
+}
+
 export function planContainerCommand(
   command: string,
   args: string[],
   cwd: string = process.cwd()
 ): ContainerCommandPlan {
+  // Runtime gate FIRST, before any file lookup, lock, or container: an
+  // unsupported or unrecognised runtime is refused by name here rather than
+  // started and left to hang. npx stays "node" and falls through to the
+  // file-existence check below, which is where an uninstalled npx package
+  // (a registry fetch the sandbox's DNS blackhole forbids) is refused with
+  // the real, network-shaped reason instead of a runtime one.
+  const runtime = classifyRuntime(command);
+  if (runtime.kind === "unsupported-runtime") {
+    throw new EnumerationPlanError(
+      `${runtime.runtime} MCP servers aren't supported by \`--from-command\` yet — the scan ` +
+        "sandbox is Node-only (it provides a Node runtime and nothing else, with no network). " +
+        "If the server is already running, enumerate it with `scan --from-url <url>` over SSE. " +
+        "To scan a Node server, point --from-command at its Node entry point, e.g. " +
+        "`--from-command node node_modules/@scope/server/dist/index.js`."
+    );
+  }
+  if (runtime.kind === "unsupported-binary") {
+    throw new EnumerationPlanError(
+      `--from-command can't run \`${command}\` — it looks like a non-Node binary or script, and ` +
+        "the scan sandbox is Node-only (a Node runtime and nothing else). If the server is " +
+        "already running, enumerate it with `scan --from-url <url>`; to scan a Node server, " +
+        "invoke it as `node <path>`."
+    );
+  }
+  if (runtime.kind === "unrecognised") {
+    throw new EnumerationPlanError(
+      `--from-command could not recognise the runtime \`${command}\`. The scan sandbox runs Node ` +
+        "only, and palar refuses to start an unrecognised runtime rather than launch a container " +
+        "that will hang. If it is a Node server, invoke it as `node <path>`; if it is already " +
+        "running, use `scan --from-url <url>`."
+    );
+  }
+
   const tokens = [command, ...args];
 
   const programToken = findProgramToken(tokens, cwd);
@@ -218,9 +323,10 @@ export function planContainerCommand(
       `--from-command could not find a program to run: none of \`${tokens.join(" ")}\` names a ` +
         "file that exists on this disk. This flag runs a server you already have installed " +
         "locally — the sandbox has no network and no package manager, so an invocation that " +
-        "asks a registry for the server (npx, uvx, pipx) cannot work here. Install it first " +
-        "and point --from-command at the installed entry point, e.g. " +
-        "`--from-command node node_modules/@scope/server/dist/index.js`."
+        "asks a registry for the server (npx, uvx, pipx) cannot work here. The sandbox also " +
+        "runs Node and nothing else, so a non-Node launcher (python -m ..., a Go or compiled " +
+        "binary) is not present regardless. Install the server and point --from-command at its " +
+        "installed entry point, e.g. `--from-command node node_modules/@scope/server/dist/index.js`."
     );
   }
 
