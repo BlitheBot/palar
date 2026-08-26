@@ -6,6 +6,73 @@ This project is pre-1.0. Under `0.x`, minor releases may change behaviour;
 the "Behaviour changes" section of each entry is the part to read before
 upgrading a CI gate.
 
+## 0.4.1 — 2026-08-26
+
+A cross-platform fix. Nothing changes for anyone already scanning from
+Linux x64; everyone else stops hitting a wall that had nothing to do with
+the server they were scanning.
+
+### Fixed
+
+- **Both live fixtures now run on any host, so the demo is no longer
+  Linux-only.** `fixtures/vuln-server` and `fixtures/contradiction-server`
+  were TypeScript run via `node --import tsx src/index.ts`. `tsx` pulls in
+  `esbuild`, which ships a platform-native binary: `npm install` on a
+  Windows or macOS host wrote `@esbuild/win32-x64` (or `darwin-*`) into the
+  fixture's `node_modules`, `palar live` bind-mounted that directory into
+  its linux-x64 container, and esbuild refused to run. The target died
+  before the MCP handshake and it surfaced as `Connection closed` with an
+  esbuild platform error in the captured stderr. The documented
+  `--os=linux --cpu=x64 --ignore-scripts` workaround covered
+  `contradiction-server` only, and was never applied to `vuln-server` at
+  all. Both are now plain JavaScript with no build step and no native
+  dependency anywhere in the tree (0 of 95 packages declare an `os`/`cpu`
+  constraint or an install script). Behaviour is unchanged, verified at the
+  wire: the full `listTools()` payload from the old TypeScript entrypoint
+  and the new JavaScript one is byte-identical for both fixtures — same
+  tools, same schemas, same annotations, and the U+200B poisoning intact.
+  The demo transcript is unaffected.
+
+- **`palar live` refuses at pre-flight when a target's dependencies were
+  installed for another platform, instead of surfacing the target's own
+  stack trace.** The problem above is not specific to palar's fixtures: any
+  Node MCP server with a native dependency (`esbuild`, `rollup`, `swc`,
+  `lightningcss`, `sharp`) hits it under a sandboxed run, because the
+  sandbox mounts the `node_modules` you installed on your host into a Linux
+  container. It presented as `NEVER REACHED` plus the package's own error,
+  with nothing to say this was a host-side install with a one-line fix
+  rather than a broken server. The check now runs beside `findProgramToken`
+  before any container exists — 89ms to refuse, versus ~11s spent starting
+  a container that was always going to die — and names the offending
+  package, both platforms, and the fix. Detection reads each installed
+  package's own `os`/`cpu` fields (npm's actual contract, reproduced
+  including `!`-negation and `any`), not directory names and not stderr.
+  It is built to fail toward silence: mismatches are grouped by scope and
+  reported only when *every* platform-declaring package in that scope
+  mismatches, so a correct `--os=linux` install stays quiet, as does a tree
+  carrying both platforms; the container's CPU is read from `process.arch`
+  rather than hardcoded, because neither image pins `--platform` and an
+  Apple Silicon host runs a linux/arm64 container; and an unreadable or
+  absent manifest is never a mismatch. Bounds are documented in the README
+  — notably that `scan --from-command` mounts the same way, has the same
+  failure, and does not yet run this check.
+
+- **CI installs the fixtures' dependencies, so the two Docker integration
+  tests actually run.** `ci.yml` ran `npm test` but never installed either
+  fixture's `node_modules`, and the live tests had been failing inside the
+  container with `ERR_MODULE_NOT_FOUND` on every run since they landed.
+  Both fixtures are now installed with a plain `npm ci` — no `--os`/`--cpu`
+  flags, which is the point — and `ci.yml` and `canary.yml` both fail
+  loudly if `@esbuild` or `tsx` ever reappears in a fixture, so this cannot
+  regress silently.
+
+### Notes
+
+- Handshake timings were re-measured now that there is no TypeScript to
+  compile: `vuln-server` drops from 8.2–15.9s to 7.8–11.2s. The tables in
+  `src/live/connector.ts` and the README are updated. No default timeout
+  changed.
+
 ## 0.4.0 — 2026-08-25
 
 Everything since 0.3.0 in one release: three feature lines — acknowledgements,
