@@ -6,6 +6,15 @@
  * ../README.md for the tool-by-tool table and for which tools are controls
  * that must NOT produce a contradiction.
  *
+ * DELIBERATELY PLAIN JAVASCRIPT — do not port this back to TypeScript.
+ * palar mounts this directory into a linux-x64 container and runs it with
+ * the bare `node` in docker/target-runtime. A TS entrypoint needs tsx, tsx
+ * needs esbuild, and esbuild ships a platform-native binary: an `npm install`
+ * on a Windows or macOS host writes @esbuild/win32-x64 (or darwin-*) here,
+ * the container is linux-x64, and the target dies before the MCP handshake.
+ * Plain JS keeps this fixture's dependency tree pure-JS, so `npm test` works
+ * from a clean clone on any host. Keep it that way.
+ *
  * It is a separate server from fixtures/vuln-server on purpose. That
  * fixture's tools carry no annotations, the site's demo transcript is
  * generated from a real run of it, and editing it to add claims would make
@@ -108,7 +117,7 @@ server.registerTool(
       };
     } catch (err) {
       return {
-        content: [{ type: "text", text: `fetch failed: ${(err as Error).message}` }],
+        content: [{ type: "text", text: `fetch failed: ${err.message}` }],
       };
     }
   }

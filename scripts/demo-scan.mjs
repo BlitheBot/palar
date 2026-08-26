@@ -11,8 +11,11 @@ import { spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+// palar's OWN source is TypeScript, so the CLI is still run through tsx from
+// the repo root. The FIXTURE is deliberately plain JavaScript and is started
+// with a bare `node` — see fixtures/vuln-server/src/index.js for why.
 const TSX_CLI = new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
-const VULN_SERVER_ENTRY = "fixtures/vuln-server/src/index.ts";
+const VULN_SERVER_ENTRY = "fixtures/vuln-server/src/index.js";
 const FIXTURE_DIR = "fixtures/vuln-server";
 
 function writeSection(title) {
@@ -23,7 +26,7 @@ async function smokeTestLiveServer() {
   writeSection("1. Live stdio smoke test (fixtures/vuln-server)");
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [TSX_CLI, VULN_SERVER_ENTRY],
+    args: [VULN_SERVER_ENTRY],
   });
   const client = new Client({ name: "palar-demo-client", version: "0.1.0" });
   try {

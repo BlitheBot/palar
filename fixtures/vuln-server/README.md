@@ -8,7 +8,7 @@ untrusted callers.
 
 ## Contents
 
-- `src/index.ts` — a real, runnable MCP server (stdio transport,
+- `src/index.js` — a real, runnable MCP server (stdio transport,
   `@modelcontextprotocol/sdk`) exposing three tools.
 - `mcp.tools.json` / `mcp.server.json` — static definition files mirroring
   the same tools and network posture, in the format Palar's static
@@ -40,11 +40,11 @@ and audits their declared schemas, descriptions, and network config without
 ever running anything. The JSON files here are what `scan` reads.
 
 `palar live` (see the top-level README's "Live scanning" section) is
-different: it runs `src/index.ts` for real, inside a Docker container, via
+different: it runs `src/index.js` for real, inside a Docker container, via
 the `command`/`args` declared in `mcp.server.json`, connects over stdio, and
 sends it crafted input to confirm the flaws above via an out-of-band
 callback — this is the canonical fixture used to prove that path end-to-end.
-`src/index.ts` is a real, independently runnable server kept in sync with
+`src/index.js` is a real, independently runnable server kept in sync with
 the JSON definitions so both modes have a genuine target, not just a
 theoretical schema on paper.
 
@@ -58,7 +58,7 @@ dependencies first:
 ```bash
 cd fixtures/vuln-server
 npm install
-node --import tsx src/index.ts
+node src/index.js
 ```
 
 It speaks MCP over stdio — pair it with an MCP client (or the SDK's
@@ -68,3 +68,33 @@ It speaks MCP over stdio — pair it with an MCP client (or the SDK's
 > matters even if you don't invoke `node` yourself: `live` still needs
 > `node_modules` to exist here so the container has `@modelcontextprotocol/sdk`
 > and `zod` available at `/target/node_modules`.
+
+## Why this fixture is plain JavaScript, not TypeScript
+
+Deliberate, and load-bearing — please don't port it back.
+
+`palar live` bind-mounts this directory read-only into a **linux-x64**
+container and starts it with the bare `node` in `docker/target-runtime`.
+Nothing is baked into that image, so every dependency comes from the
+`node_modules` you installed on **your** host.
+
+A TypeScript entrypoint needs `tsx`, `tsx` needs `esbuild`, and `esbuild`
+ships a **platform-native binary**. An `npm install` on a Windows or macOS
+host therefore writes `@esbuild/win32-x64` (or `@esbuild/darwin-arm64`) into
+this directory, the container is linux-x64, and esbuild refuses to run —
+the target dies before the MCP handshake and the failure surfaces as a
+connect timeout. The demo would only ever have worked on Linux x64.
+
+Plain JavaScript keeps this fixture's dependency tree **pure JS**:
+`@modelcontextprotocol/sdk` and `zod` are platform-agnostic, no package in
+the tree declares an `os`/`cpu` constraint or an install script, and there
+is no build step. A clean clone plus a plain `npm install` works on any
+host. Verify with:
+
+```bash
+npm ls --all          # no @esbuild, no tsx
+```
+
+The tool surface is unchanged by this: the three tools, their schemas, and
+their deliberate flaws — including the U+200B in `summarize_text` — are
+byte-identical to the TypeScript version over the wire.

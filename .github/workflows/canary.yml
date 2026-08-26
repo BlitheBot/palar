@@ -148,8 +148,8 @@ jobs:
       #
       # fixtures/vuln-server/node_modules is gitignored and not tracked. The
       # sandbox bind-mounts the target dir read-only at /target and
-      # target-runtime is a bare node:20-slim with nothing baked in -- tsx and
-      # the MCP SDK come ONLY from the fixture's own node_modules.
+      # target-runtime is a bare node:20-slim with nothing baked in -- the MCP
+      # SDK comes ONLY from the fixture's own node_modules.
       #
       # Without this the target cannot start, and the failure presents as a
       # connect timeout: indistinguishable, from the outside, from the firewall
@@ -159,7 +159,17 @@ jobs:
         run: |
           set -euo pipefail
           npm ci
-          test -x node_modules/.bin/tsx || { echo "::error::tsx missing from fixture node_modules after npm ci"; exit 1; }
+          test -f node_modules/@modelcontextprotocol/sdk/package.json || { echo "::error::@modelcontextprotocol/sdk missing from fixture node_modules after npm ci"; exit 1; }
+
+          # The fixture is deliberately dependency-pure JS so it can be
+          # installed on any host and mounted into this linux-x64 container
+          # (see fixtures/vuln-server/README.md). A platform-native package
+          # reappearing here means someone reintroduced a build step, and the
+          # demo silently stops working off-Linux -- fail loudly instead.
+          if [ -d node_modules/@esbuild ] || [ -e node_modules/.bin/tsx ]; then
+            echo "::error::fixtures/vuln-server regained a native toolchain dependency (esbuild/tsx); it must stay pure JS"
+            exit 1
+          fi
 
       # =====================================================================
       # 3. Pre-warm both images.

@@ -65,7 +65,7 @@ test(
       name: "contradiction-server",
       transport: "stdio",
       command: "node",
-      args: ["--import", "tsx", "src/index.ts"],
+      args: ["src/index.js"],
     };
 
     const result = await runLiveScan(server, [], {

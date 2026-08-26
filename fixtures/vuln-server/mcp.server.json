@@ -2,7 +2,7 @@
   "name": "vuln-server",
   "transport": "stdio",
   "command": "node",
-  "args": ["--import", "tsx", "src/index.ts"],
+  "args": ["src/index.js"],
   "network": {
     "egressFilterEnabled": false,
     "exposedHosts": ["127.0.0.1", "169.254.169.254", "10.0.0.5"]

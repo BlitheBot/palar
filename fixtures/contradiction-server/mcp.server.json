@@ -3,8 +3,6 @@
   "transport": "stdio",
   "command": "node",
   "args": [
-    "--import",
-    "tsx",
-    "src/index.ts"
+    "src/index.js"
   ]
 }

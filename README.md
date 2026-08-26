@@ -516,7 +516,7 @@ start; the target handshake by comparison:
 | `server-memory` | 4.5–7.0s |
 | `server-everything` | 5.4–8.0s |
 | `server-filesystem` | 5.2–10.1s |
-| `vuln-server` fixture | 7.2–15.9s |
+| `vuln-server` fixture | 7.8–11.2s |
 | `desktop-commander` | 44.0–53.4s |
 
 `desktop-commander` is why the default is 90000 and not less: it fetches

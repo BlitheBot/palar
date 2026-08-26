@@ -62,16 +62,27 @@ into the target's container, so the fixture needs its own `node_modules`:
 
 ```bash
 cd fixtures/contradiction-server
-npm install --os=linux --cpu=x64 --ignore-scripts
+npm install
 ```
 
-The flags are not optional if you are on Windows or macOS. `tsx` pulls in
-`esbuild`, whose binary is platform-specific, and the container is Linux —
-a plain `npm install` on another host produces a `node_modules` the target
-cannot start from, and the failure surfaces as `Connection closed` with an
-esbuild platform error in the captured stderr. `--ignore-scripts` is needed
-alongside them because esbuild's postinstall validates the binary against
-the host it is running on, which is not the host it is for.
+No flags, no build step, any host. This fixture is **deliberately plain
+JavaScript** so that a plain `npm install` on Windows or macOS produces a
+`node_modules` the linux-x64 container can actually start from.
+
+It used to be TypeScript, which required `tsx`, which pulls in `esbuild`,
+whose binary is platform-specific: a plain install on a non-Linux host wrote
+`@esbuild/win32-x64` (or `darwin-*`) here and the target died before the MCP
+handshake, surfacing as `Connection closed` with an esbuild platform error in
+the captured stderr. The workaround was `--os=linux --cpu=x64
+--ignore-scripts`; the fix is to have no native dependency at all.
+
+`@modelcontextprotocol/sdk` and `zod` are pure JS, no package in the tree
+declares an `os`/`cpu` constraint or an install script, and there is no
+build step. Please do not port this fixture back to TypeScript. Verify with:
+
+```bash
+npm ls --all          # no @esbuild, no tsx
+```
 
 Then, from the repo root:
 
@@ -81,6 +92,6 @@ npm run dev -- live --execute fixtures/contradiction-server   # live: probes, an
 ```
 
 The static scan reads `mcp.tools.json` / `mcp.server.json`; the live pass
-runs `src/index.ts` for real inside Docker via the `command`/`args` declared
+runs `src/index.js` for real inside Docker via the `command`/`args` declared
 in `mcp.server.json`. The two are kept in sync so both modes have a genuine
 target rather than a schema on paper.

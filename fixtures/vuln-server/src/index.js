@@ -2,6 +2,15 @@
  * INTENTIONALLY VULNERABLE — FOR PALAR TESTING ONLY, DO NOT DEPLOY.
  * See ../README.md for the full list of deliberate flaws this server exists
  * to exercise. Every "vulnerability" below is on purpose.
+ *
+ * DELIBERATELY PLAIN JAVASCRIPT — do not port this back to TypeScript.
+ * palar mounts this directory into a linux-x64 container and runs it with
+ * the bare `node` in docker/target-runtime. A TS entrypoint needs tsx, tsx
+ * needs esbuild, and esbuild ships a platform-native binary: an `npm install`
+ * on a Windows or macOS host writes @esbuild/win32-x64 (or darwin-*) here,
+ * the container is linux-x64, and the target dies before the MCP handshake.
+ * Plain JS keeps this fixture'''s dependency tree pure-JS, so the demo and the
+ * live pass work from a clean clone on any host. Keep it that way.
  */
 import { exec } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -65,7 +74,7 @@ server.registerTool(
       };
     } catch (err) {
       return {
-        content: [{ type: "text", text: `fetch failed: ${(err as Error).message}` }],
+        content: [{ type: "text", text: `fetch failed: ${err.message}` }],
       };
     }
   }

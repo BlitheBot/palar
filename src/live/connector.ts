@@ -210,7 +210,7 @@ export async function connectLive(
   //   server-memory         5.4-7.0s
   //   server-everything     5.9-8.0s
   //   server-filesystem     5.4-10.1s
-  //   vuln-server fixture   8.2-15.9s   (tsx compiling TypeScript, cold)
+  //   vuln-server fixture   7.8-11.2s   (plain JS, no build step)
   //   desktop-commander     46.0s
   //
   // desktop-commander is the case that forced this. It fetches remote

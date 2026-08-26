@@ -54,8 +54,8 @@ test(
   "each probe class confirms INDEPENDENTLY against fixtures/vuln-server",
   {
     skip: dockerAvailable ? false : "Docker backend not available; live scan requires Docker",
-    // Cold container + tsx compiling TypeScript before the MCP handshake was
-    // measured at ~8-10s connect; give the whole scan generous headroom.
+    // Cold container start before the MCP handshake; give the whole scan
+    // generous headroom.
     timeout: 180_000,
   },
   async () => {
@@ -63,7 +63,7 @@ test(
       name: "vuln-server",
       transport: "stdio",
       command: "node",
-      args: ["--import", "tsx", "src/index.ts"],
+      args: ["src/index.js"],
     };
 
     const result = await runLiveScan(server, [], {

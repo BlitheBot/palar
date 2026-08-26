@@ -7,8 +7,5 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "tsx": "^4.19.0"
   }
 }

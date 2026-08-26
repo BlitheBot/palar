@@ -14,5 +14,33 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+
+      # The two live fixtures are separate packages with their own
+      # node_modules, and neither is installed by the root `npm ci`. The
+      # sandbox bind-mounts a fixture dir read-only at /target and
+      # target-runtime is a bare node:20-slim with nothing baked in, so the
+      # MCP SDK can only come from the fixture's own node_modules. Without
+      # this the two Docker integration tests fail with `Connection closed`
+      # and ERR_MODULE_NOT_FOUND from inside the container.
+      #
+      # Plain `npm ci` with no --os/--cpu flags is the point: both fixtures
+      # are deliberately dependency-pure JS so they install correctly on any
+      # host. See each fixture's README.
+      - name: Install fixture dependencies
+        run: |
+          set -euo pipefail
+          for f in fixtures/vuln-server fixtures/contradiction-server; do
+            ( cd "$f" && npm ci )
+            test -f "$f/node_modules/@modelcontextprotocol/sdk/package.json" || { echo "::error::sdk missing from $f after npm ci"; exit 1; }
+
+            # A platform-native package reappearing here means someone
+            # reintroduced a build step, and the fixtures silently stop
+            # working off-Linux again -- fail loudly instead.
+            if [ -d "$f/node_modules/@esbuild" ] || [ -e "$f/node_modules/.bin/tsx" ]; then
+              echo "::error::$f regained a native toolchain dependency (esbuild/tsx); it must stay pure JS"
+              exit 1
+            fi
+          done
+
       - run: npm run build
       - run: npm test
