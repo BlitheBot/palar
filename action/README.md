@@ -29,7 +29,7 @@ jobs:
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `version` | `"0.4.0"` | Version of `palar` to install — pinned so the gate's verdict cannot change without a change in your repo; set it to `^0.4.0` or `latest` to float. Ignored when `binary` is set |
+| `version` | `"0.4.1"` | Version of `palar` to install — pinned so the gate's verdict cannot change without a change in your repo; set it to `^0.4.1` or `latest` to float. Ignored when `binary` is set |
 | `binary` | *(unset)* | Run an already-built palar executable instead of installing from npm. Leave unset — see below |
 | `dir` | `.` | Directory to scan for MCP definition files |
 | `fail-on` | *(unset)* | Fail if any finding is at or above this severity (`critical`, `high`, `medium`, `low`, `info`) |
