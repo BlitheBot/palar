@@ -106,3 +106,95 @@ out.
 Deciding what probing an SSE target should do is a separate change with a
 separate blast radius, and it was deliberately not made alongside the
 control call.
+
+---
+
+## Working agreement
+
+*How to make changes in this repo. This section does not restate the
+outward-facing claims discipline in **Competitive positioning → Claims
+discipline for this section** and **Source of the Snyk claims** above —
+those own that topic and win where they apply.*
+
+### The loop
+
+Every non-trivial change follows: **plan → failing test → implement → fresh-context review → verify**.
+
+Trivial means: typo, comment, log-message wording, single-line config value. Everything
+else goes through the loop. If you're unsure which side something falls on, it's not trivial.
+
+### 1. Plan first
+
+Before writing implementation code for anything spanning more than one file or one
+function, write the plan to `docs/plans/<short-name>.plan.md` and stop.
+
+The plan states:
+- What changes, file by file
+- What could break that currently works
+- How we'll know it worked (the specific test or command)
+- What you're deliberately NOT doing
+
+Then wait for approval. Do not start implementing because the plan "seems obviously right."
+
+### 2. Failing test before fix
+
+For bug fixes: reproduce with a test that fails for the right reason, and show me the
+failure output. A test that passes before your change proves nothing about your change.
+
+For new behavior: write the test, watch it fail, then implement.
+
+Paste real output. Never describe a test result you didn't run.
+
+### 3. Implement narrowly
+
+Change only what the plan said you'd change. If you discover the plan was wrong mid-way,
+stop and say so rather than silently expanding scope. Unrelated cleanup you spot along
+the way goes in a note at the end, not in this diff.
+
+### 4. Review from a fresh reading
+
+Before declaring done, re-read the diff as if you didn't write it. Look for:
+- Cases the tests don't cover
+- Silent failures (swallowed exceptions, unchecked returns, default-on-error)
+- String/enum mismatches between call sites
+- State that's in memory only and dies on restart
+
+State findings even when they mean more work. "I reviewed it and it's fine" with no
+specifics means you didn't review it.
+
+### 5. Verify
+
+Run the actual commands. Build, lint, types, tests. Paste output.
+
+If something is unverified, say the word "unverified" next to it. Do not summarize a
+session as clean when part of it was reasoned about rather than run.
+
+### Honesty rules
+
+- Never report a command as run if it wasn't run.
+- Never claim a test passes without the output.
+- When you don't know, say you don't know, then go find out.
+- If you broke something earlier in the session, say so plainly in the summary.
+
+### Git
+
+- Commit freely on feature branches.
+- **Do not push** anything touching live-money paths, credentials, or deploy config
+  without explicit sign-off in this session.
+- `git status` before every commit; confirm nothing unrelated got swept in.
+- One logical change per commit. Commit message says why, not what.
+
+### Project-specific
+
+<!-- Edit per repo. Examples of what belongs here: -->
+- Test command: `npm test` (package.json `scripts.test`: `tsc -p tsconfig.json && node --test "dist/**/*.test.js"`; also run as `npm test` in `.github/workflows/ci.yml`)
+- Lint/typecheck command: `npm run typecheck` (package.json `scripts.typecheck`: `tsc --noEmit`). No lint command found — no `lint` script in package.json, no ESLint/Prettier/Biome config in the repo, and no lint step in any workflow under `.github/workflows/`.
+- Build command: `npm run build` (package.json `scripts.build`: `tsc`; also run as `npm run build` in `.github/workflows/ci.yml`)
+- Package manager: `npm` — use it, don't hand-edit lockfiles or manifests (`package-lock.json` at repo root; `.github/workflows/ci.yml` runs `npm ci` with `cache: npm`)
+- Paths that require extra care before editing:
+  - `src/live/sandbox.ts` — the sandbox / egress-firewall install path (`buildFirewallScript()` ~L308, `installFirewall()` ~L434). A wrong rule here silently widens container egress; `.github/workflows/canary.yml` is the only end-to-end check that the firewall actually contains.
+  - `src/live/oracle.ts` — the callback oracle (loopback HTTP listener). A received callback is the sole proof a probe is real; **Claims discipline for this section** above pins what it does and does not establish.
+  - `src/live/escalate.ts` — the one place in the codebase that rewrites a `ruleId` (IV-001 → `IV-101` on a confirmed callback, ~L62 / L96–103). It also moves severity and score before anything renders or gates, so a mistake changes `--fail-on` and `--json` output, not just display.
+  - `src/core/compliance.ts` — scoring and grade computation (`computeScore`, the severity and confidence weight tables). `escalate.ts` recomputes through it; a weight change moves every grade.
+  - `fixtures/vuln-server/` — the palar-site transcript is generated from a real run of this fixture (see `fixtures/contradiction-server/README.md` and `CHANGELOG.md`), so **any** change to its tools, schemas, `mcp.*.json`, or `src/index.js` breaks that transcript. Two obligations, both required: (1) note the fixture change in the commit message here, and (2) regenerate on the site side before the site's next deploy — otherwise the published page goes silently stale. The generator lives in the site repo, not this one: `C:\Users\mjshi\OneDrive\Desktop\Palar\PALAR\PALAR`. Regeneration there is manual — that repo has no generator script (no `package.json`, `Makefile`, or `scripts/`); the transcript is real terminal output pasted into its `index.html`, and the findings/score it must agree with are pinned in that repo's `CLAUDE.md` §6.
+  - Already delicate, already covered above — don't re-document, just tread carefully: `src/live/control.ts` (the permission gate — see **Shipped: distinguishing an environmental failure from a target refusal**), and `src/live/probes.ts` / `src/rules/network-bounds.ts` (see **Claims discipline for this section**).
