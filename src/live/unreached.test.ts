@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -189,6 +189,15 @@ test(
     // the sandbox and its stderr came back, so it proves the whole path.
     const dir = await mkdtemp(join(tmpdir(), "palar-unreached-"));
     try {
+      // mkdtemp creates the directory 0700, owned by the host user. The
+      // sandbox runs as root with --cap-drop=ALL, so it has no
+      // CAP_DAC_OVERRIDE and is bound by ordinary permission bits: on a
+      // native Linux Engine (CI) it cannot enter a 0700 directory owned by
+      // another uid, and Node reports that as "Cannot find module
+      // '/target/server.js'". Docker Desktop's bind mounts don't enforce
+      // host modes, which is why this passed locally. 0755 is what a real
+      // server checkout has, and what the fixture directories have.
+      await chmod(dir, 0o755);
       await writeFile(
         join(dir, "server.js"),
         'console.error("PALAR_CONTROL_RAN"); process.exit(1);\n',
