@@ -3,15 +3,15 @@
 A scanner for MCP servers that tries the attack instead of guessing at it.
 
 Most MCP scanners read a server's tool descriptions and schemas and flag what
-looks risky. `palar live` goes further. For stdio servers, it starts the server
-in a locked-down Docker container, sends crafted input to its tools, and waits
-for a callback to a listener on your machine. If the callback arrives, the
-injection ran. A hijacked server can still return 200 OK, and palar only
-reports a finding as confirmed when that out-of-band callback shows up.
+looks risky. `palar live` starts a stdio server in a locked-down Docker
+container, sends crafted input to its tools, and waits for a callback to a
+listener on your machine. If the callback arrives, the injection ran. A
+hijacked server can still return 200 OK, and palar only reports a finding as
+confirmed when that out-of-band callback shows up.
 
 ### Try it (about 5 minutes)
 
-Requires Docker, installed and running. The first run builds its sandbox images
+Docker must be installed and running. The first run builds its sandbox images
 (about 320 MB), which takes a few minutes and isn't counted against the scan
 timeout.
 
@@ -39,10 +39,10 @@ finding on a tool description. Exit code 1 means something was confirmed.
   past that check and fail inside the container instead.
 - An SSE target has no local process to sandbox, so palar decides what to
   send it by host rather than by transport. A server on `127.0.0.1`, `::1`,
-  or `localhost` is probed for real, and those payloads reach an un-sandboxed
+  or `localhost` is probed, and those payloads reach an un-sandboxed
   process on your own machine. A server on any other host is enumerated only
-  and is sent no payload at all. The host is matched literally, never
-  resolved through DNS.
+  and is sent no payload at all. palar matches the host literally and never
+  resolves it through DNS.
 - A confirmed callback proves your payload executed. It does not prove the
   execution was unintended: a tool built to run shell commands will always
   confirm. Read the finding before treating it as a vulnerability.
