@@ -1,5 +1,54 @@
 # palar
 
+A scanner for MCP servers that tries the attack instead of guessing at it.
+
+Most MCP scanners read a server's tool descriptions and schemas and flag what
+looks risky. `palar live` goes further. For stdio servers, it starts the server
+in a locked-down Docker container, sends crafted input to its tools, and waits
+for a callback to a listener on your machine. If the callback arrives, the
+injection ran. A hijacked server can still return 200 OK, and palar only
+reports a finding as confirmed when that out-of-band callback shows up.
+
+### Try it (about 5 minutes)
+
+Requires Docker, installed and running. The first run builds its sandbox images
+(about 320 MB), which takes a few minutes and isn't counted against the scan
+timeout.
+
+    git clone https://github.com/BlitheBot/palar.git
+    cd palar/fixtures/vuln-server && npm install
+    cd ../../..
+    npx palar@0.4.1 live ./palar/fixtures/vuln-server --execute
+
+Run the last command from the directory that CONTAINS the clone, not from
+inside it. Inside the repo, npx finds the local package.json and tries to run
+an unbuilt copy.
+
+`vuln-server` is a deliberately vulnerable fixture. Expect two confirmed
+findings (command injection on `run_diagnostic`, SSRF on `fetch_url`), each
+backed by a real callback, plus a live-verified hidden-character poisoning
+finding on a tool description. Exit code 1 means something was confirmed.
+
+### Current limits
+
+- Sandboxed targets must be Node servers already installed on disk. The
+  sandbox has a Node runtime and no network, so a target that has to be
+  fetched first (`npx -y`, `uvx`, `pipx`), or whose command names no file on
+  disk (`python -m mcp_server_fetch`), is refused before a container starts,
+  with the reason. Other non-Node commands, like `python3 ./server.py`, get
+  past that check and fail inside the container instead.
+- An SSE target has no local process to sandbox, so palar decides what to
+  send it by host rather than by transport. A server on `127.0.0.1`, `::1`,
+  or `localhost` is probed for real, and those payloads reach an un-sandboxed
+  process on your own machine. A server on any other host is enumerated only
+  and is sent no payload at all. The host is matched literally, never
+  resolved through DNS.
+- A confirmed callback proves your payload executed. It does not prove the
+  execution was unintended: a tool built to run shell commands will always
+  confirm. Read the finding before treating it as a vulnerability.
+
+## Modes
+
 A defensive analyzer for local MCP (Model Context Protocol) tool and server
 definition files, with two distinct modes:
 
