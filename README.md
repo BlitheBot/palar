@@ -18,7 +18,7 @@ timeout.
     git clone https://github.com/BlitheBot/palar.git
     cd palar/fixtures/vuln-server && npm install
     cd ../../..
-    npx palar@0.4.1 live ./palar/fixtures/vuln-server --execute
+    npx palar@0.5.0 live ./palar/fixtures/vuln-server --execute
 
 Run the last command from the directory that CONTAINS the clone, not from
 inside it. Inside the repo, npx finds the local package.json and tries to run
