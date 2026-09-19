@@ -87,22 +87,43 @@ end-to-end. Bounded by `--control-timeout-ms` (defaults to
 `--callback-timeout-ms`) because the real risk is a tool that BLOCKS, not
 one that is slow.
 
-### Open: SSE targets already receive payloads
+### Shipped: SSE payload eligibility, decided by loopback-vs-remote
 
-Gating the benign control for SSE while the *payload* still goes out is not
-a defensible line, and it is recorded as a known incoherence in
-`live/control.ts` rather than papered over.
+This section previously recorded an open incoherence: the probe loop had no
+transport branch, so an SSE target received the full injection payload set
+unsandboxed, including a remote server the operator may not own. That was
+closed by `b709da9` (25 Aug 2026) and this record stayed stale until
+18 Sep 2026. `src/live/control.ts`'s docstring was updated at the time and
+is correct; only this file lagged.
 
-`liveScan.ts`'s probe loop has **no transport branch**. `isStdio` is
-consulted in exactly four places — the definition, the result label, the
-stdio-only pre-flight, and sandbox creation — and none of them gate
-probing. So an SSE target receives the full injection payload set
-(`buildCommandInjectionPayload` / `buildSsrfPayload`) over the network,
-unsandboxed, to a remote server. `--execute`'s warning text does say SSE
-targets are "unaffected" by the sandboxing, which is true but reads as
-reassurance about isolation rather than as notice that payloads still go
-out.
+`src/live/eligibility.ts` decides payload eligibility on a **different axis
+from sandboxing**: loopback-vs-remote, not stdio-vs-sse.
+`classifyPayloadEligibility()` returns three cases and `liveScan.ts:651` is
+the one place in the probe loop that gates on it (`runOneProbe` is the only
+thing in that loop that emits a payload):
 
-Deciding what probing an SSE target should do is a separate change with a
-separate blast radius, and it was deliberately not made alongside the
-control call.
+- **stdio**: eligible, sandboxed. Unchanged by that commit.
+- **SSE, loopback** (`127.0.0.0/8`, `::1`, or the literal `localhost`):
+  eligible, `sandboxed: false`. Payloads reach a real local process with no
+  container around it, because the operator pointed palar at their own
+  machine and asked. `report.ts:655-661` renders that as its own warning
+  line rather than folding it in with the stdio case.
+- **SSE, remote**: **not** eligible. Enumerated only, zero payloads, and a
+  notice naming the host. The oracle listener is loopback-scoped, so a
+  remote target's callback to `127.0.0.1` resolves to its *own* loopback and
+  never reaches palar. Such a probe could be neither contained nor
+  confirmed, so it is all of the harm and none of the value.
+
+Two properties worth not breaking. The host is matched **literally**, never
+resolved: DNS would add a round trip and a TOCTOU window where a name
+resolves to loopback for the check and to a routable address by the time the
+payload is sent. And the benign control call in `control.ts` stays gated on
+stdio-vs-sse, deliberately out of step with this axis, because that gate
+governs *sandboxing*: a loopback SSE process is no more sandboxed than a
+remote one, so an extra benign call to it is still an unbounded side effect
+and is still withheld.
+
+Covered by `src/live/eligibility.test.ts` and
+`src/live/sseEligibility.integration.test.ts` (19 tests, including one that
+proves a remote-classified SSE server receives `listTools` and zero
+`tools/call`, server-side).
