@@ -19,10 +19,25 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { runLiveScan } from "./liveScan.js";
 import { renderLiveMarkdownReport } from "./report.js";
 import { findProgramToken } from "./enumerate.js";
 import type { AuditResult } from "../core/types.js";
+
+const execFileAsync = promisify(execFile);
+
+async function dockerIsAvailable(): Promise<boolean> {
+  try {
+    await execFileAsync("docker", ["version", "--format", "{{.Server.Version}}"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const dockerAvailable = await dockerIsAvailable();
 
 const STATIC: AuditResult = {
   timestamp: "2026-08-20T00:00:00.000Z",
@@ -133,6 +148,66 @@ test("the never-reached report does not have the shape of a clean pass", async (
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a non-Node runtime is refused at pre-flight even when its script exists on disk", async () => {
+  // The gap this closes: `python3 ./server.py` passes findProgramToken()
+  // because server.py is real, so live used to start a container and die in
+  // it as `Cannot find module '/target/python3'` about 30s later.
+  const dir = await mkdtemp(join(tmpdir(), "palar-unreached-"));
+  try {
+    await writeFile(join(dir, "server.py"), "import sys\n", "utf8");
+    const started = Date.now();
+    const result = await runLiveScan(
+      { name: "py", transport: "stdio", command: "python3", args: ["./server.py"] },
+      [],
+      { targetDir: dir }
+    );
+
+    assert.equal(result.outcome, "never-reached");
+    assert.match(result.unreachable!.reason, /python3 \.\/server\.py/);
+    assert.match(result.unreachable!.reason, /a Python server/);
+    assert.match(result.unreachable!.reason, /scan --from-url/);
+    // Refused before the sandbox: no oracle bound, no process, no Docker time.
+    assert.equal(result.oracle.baseUrl, "");
+    assert.equal(result.pid, null);
+    assert.equal(result.sandboxSetupMs, 0);
+    assert.ok(Date.now() - started < 5_000, "the refusal took long enough to have started a container");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "control: a Node target still gets past the runtime gate and runs in the container",
+  {
+    skip: dockerAvailable ? false : "Docker backend not available; this control needs a container",
+    timeout: 180_000,
+  },
+  async () => {
+    // Without this, a gate that refused everything would pass the test above.
+    // The marker can only reach the reason if Node executed server.js inside
+    // the sandbox and its stderr came back, so it proves the whole path.
+    const dir = await mkdtemp(join(tmpdir(), "palar-unreached-"));
+    try {
+      await writeFile(
+        join(dir, "server.js"),
+        'console.error("PALAR_CONTROL_RAN"); process.exit(1);\n',
+        "utf8"
+      );
+      const result = await runLiveScan(
+        { name: "node-control", transport: "stdio", command: "node", args: ["./server.js"] },
+        [],
+        { targetDir: dir, connectTimeoutMs: 30_000, overallTimeoutMs: 120_000 }
+      );
+
+      assert.notEqual(result.oracle.baseUrl, "", "no oracle was bound, so the sandbox never came up");
+      assert.match(result.unreachable?.reason ?? "", /PALAR_CONTROL_RAN/);
+      assert.doesNotMatch(result.unreachable?.reason ?? "", /refuses to start it/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+);
 
 test("a server declaring no command at all is never-reached rather than throwing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "palar-unreached-"));

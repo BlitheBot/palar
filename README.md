@@ -32,11 +32,13 @@ finding on a tool description. Exit code 1 means something was confirmed.
 ### Current limits
 
 - Sandboxed targets must be Node servers already installed on disk. The
-  sandbox has a Node runtime and no network, so a target that has to be
-  fetched first (`npx -y`, `uvx`, `pipx`), or whose command names no file on
-  disk (`python -m mcp_server_fetch`), is refused before a container starts,
-  with the reason. Other non-Node commands, like `python3 ./server.py`, get
-  past that check and fail inside the container instead.
+  sandbox has a Node runtime and no network, so palar checks the declared
+  command before a container starts and refuses, with the reason, any target
+  that needs another runtime (`python3 ./server.py`,
+  `python -m mcp_server_fetch`, a Go or compiled binary, a command it doesn't
+  recognise), has to be fetched first (`npx -y`, `uvx`, `pipx`), or names no
+  file on disk. A non-Node server that is already running over SSE can still
+  be enumerated with `palar scan --from-url <url>`.
 - An SSE target has no local process to sandbox, so palar decides what to
   send it by host rather than by transport. A server on `127.0.0.1`, `::1`,
   or `localhost` is probed, and those payloads reach an un-sandboxed
@@ -600,15 +602,17 @@ confirmation.
 #### A target that was never reached
 
 `live` refuses to describe a target it never spoke to in a shape a clean
-pass could also produce. Before starting anything, it checks that the
-server's declared `command`/`args` name a program that exists under the
-mount — the same pre-flight `scan --from-command` has always run. A
-manifest declaring `python -m mcp_server_fetch` is refused there, with the
-reason, rather than starting a container in which `python` reaches Node as
-a *script path* and dies as `Cannot find module '/target/python'`.
+pass could also produce. Before starting anything, it runs the same two
+checks as `scan --from-command`. First, the declared `command` has to be
+Node. A manifest declaring `python3 ./server.py` is refused by runtime name,
+even though `server.py` exists, rather than starting a container in which
+`python3` reaches Node as a *script path* and dies as
+`Cannot find module '/target/python3'`. Second, the `command`/`args` have
+to name a program that exists under the mount. Either refusal names the
+reason.
 
-When no target is reached — by that check, by a connect timeout, by a
-container that never started — then:
+When no target is reached (refused by those checks, a connect timeout, a
+container that never started), then:
 
 - the exit code is `2`, never `0`;
 - the report says `NEVER REACHED` and prints no probe sections at all (a

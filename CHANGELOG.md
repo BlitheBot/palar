@@ -6,6 +6,35 @@ This project is pre-1.0. Under `0.x`, minor releases may change behaviour;
 the "Behaviour changes" section of each entry is the part to read before
 upgrading a CI gate.
 
+## Unreleased
+
+### Fixed
+
+- **`live` refuses non-Node targets at pre-flight, with the reason, instead
+  of starting a container that fails inside it.** The runtime allowlist
+  (`classifyRuntime`) only ran for `scan --from-command`. `live` checked
+  only that some token in the declared command named a file on disk, so a
+  manifest declaring `python3 ./server.py` passed because `server.py`
+  exists. palar then started a container, where `python3` reached Node as a
+  script path and died as `Cannot find module '/target/python3'`, about 30s
+  in. `live` now runs the same classifier before the file check and before
+  any sandbox, oracle or container exists. The refusal names the runtime,
+  exits `2` as never-reached, and points at `palar scan --from-url` for a
+  server that is already running over SSE.
+
+### Changed (may affect CI)
+
+- **Under `live`, extensionless scripts and unrecognised commands are now
+  refused, matching `scan --from-command`.** The classifier treats as Node
+  only `node`, `nodejs`, `npx`, or a path ending in `.js`, `.mjs` or `.cjs`.
+  A Node script with a `#!/usr/bin/env node` shebang and no extension,
+  declared as `"command": "./server"`, used to get past `live`'s pre-flight
+  and could reach the container. It is now refused as a non-Node binary or
+  script. So is a bare command palar does not recognise, such as
+  `"command": "my-server"`. Declare the interpreter explicitly instead:
+  `"command": "node", "args": ["./server"]`. A CI job that scanned such a
+  manifest now gets exit `2` (never reached).
+
 ## 0.4.1 — 2026-08-26
 
 A cross-platform fix. Nothing changes for anyone already scanning from

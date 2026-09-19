@@ -59,7 +59,7 @@ import {
   type LiveTool,
   type FieldProbeTarget,
 } from "./probes.js";
-import { findPlatformMismatches, findProgramToken } from "./enumerate.js";
+import { classifyRuntime, findPlatformMismatches, findProgramToken } from "./enumerate.js";
 import { isConstrained } from "../rules/input-validation.js";
 import type { MCPServerConfig, MCPToolDefinition } from "../core/types.js";
 import type {
@@ -460,6 +460,32 @@ export async function runLiveScan(
       );
     }
     const tokens = [server.command, ...(server.args ?? [])];
+
+    // Runtime gate, ahead of the file check and for the same reason
+    // planContainerCommand() orders them this way: `python3 ./server.py`
+    // passes findProgramToken() because server.py is a real file, and then
+    // dies inside the container as `Cannot find module '/target/python3'`.
+    // Same classifier `scan --from-command` uses, so the two paths cannot
+    // disagree about what the sandbox can run.
+    const runtime = classifyRuntime(server.command);
+    if (runtime.kind !== "node") {
+      const what =
+        runtime.kind === "unsupported-runtime"
+          ? `a ${runtime.runtime} server`
+          : runtime.kind === "unsupported-binary"
+            ? "a non-Node binary or script"
+            : "a runtime palar does not recognise";
+      return neverReached(
+        `Server "${server.name}" declares \`${tokens.join(" ")}\`, which is ${what}. The ` +
+          "sandbox provides a Node runtime and nothing else, so palar refuses to start it " +
+          "rather than launch a container that cannot run it. If the server is already " +
+          "running over SSE, enumerate it with `palar scan --from-url <url>`. If it is a Node " +
+          "server, point \"command\"/\"args\" at its entry point, e.g. " +
+          "`node node_modules/@scope/server/dist/index.js`. palar never reached this target " +
+          "and learned nothing about it."
+      );
+    }
+
     if (findProgramToken(tokens, opts.targetDir) === undefined) {
       return neverReached(
         `Server "${server.name}" declares \`${tokens.join(" ")}\`, and none of those tokens ` +
